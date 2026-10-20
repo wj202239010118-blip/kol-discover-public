@@ -182,7 +182,12 @@ def main() -> int:
         per_tab = 0
         for i in range(1, n):
             plat = g("平台", i).strip()
-            if a.platform and plat.lower() != a.platform.lower():
+            # 2026-10-20（用户：kick/twitch 都要看）——默认只处理这两个平台，
+            #   发现表里还有 YouTube 行，那两个平台之外的一律跳过。
+            if a.platform:
+                if plat.lower() != a.platform.lower():
+                    continue
+            elif plat.lower() not in ("kick", "twitch"):
                 continue
             slug = g("用户名/Slug", i).strip()
             if not slug:
@@ -213,14 +218,17 @@ def main() -> int:
 
     print(f"\n=== 优先联系 Top {min(a.top, len(pri))} ===")
     for r in sorted(pri, key=lambda x: -x["score"])[:a.top]:
-        print(f"  {r['score']:>5}  {r['slug'][:22]:22} {r['platform']:7} {r['tab']:12} "
-              f"观众 {r['viewers']:>6} 粉丝 {r['followers']:>7}")
+        print(f"  {r.get('score', 0):>5}  {str(r.get('slug',''))[:22]:22} "
+              f"{str(r.get('platform','')):7} {str(r.get('tab','')):12} "
+              f"观众 {r.get('viewers', 0):>6} 粉丝 {r.get('followers', 0):>7}")
 
     out = {"at": datetime.now().strftime("%Y-%m-%d %H:%M"), "cfg": cfg,
            "counts": {"total": len(all_rows), "priority": len(pri), "defer": len(dfr),
                       "by_platform": by_plat}, "rows": all_rows}
     path = a.json or os.path.join(HERE, "logs", f"priority_cloud_{datetime.now():%Y%m%d_%H%M}.json")
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    _dir = os.path.dirname(path)
+    if _dir:                       # 传 --json priority_cloud.json 时 dirname 是空串 → makedirs('') 会抛
+        os.makedirs(_dir, exist_ok=True)
     json.dump(out, open(path, "w"), ensure_ascii=False)
     print(f"\n✅ 结果: {path}")
 
