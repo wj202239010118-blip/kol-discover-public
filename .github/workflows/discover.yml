@@ -1,0 +1,70 @@
+# 代理发现 · GitHub Actions 免费定时（设备关机也能跑）
+# 依赖：只有 Google 服务账号(Secret) + 网络出口 —— 脚本走 RSS/WP API/t.me/s 网页/WA已加入群，
+#       不需要任何 TG/WA session，所以能脱离本机 Mac。
+name: agent-discover
+
+on:
+  # 2026-10-09: 定时改由 Cloudflare Worker `gh-discover-cron` 调 workflow_dispatch（可靠触发）；
+  #   原 schedule 每 2h 已弃用。保留手动触发。
+  workflow_dispatch:            # 手动触发（首次验证 / 补跑）
+
+concurrency:
+  group: agent-discover
+  cancel-in-progress: false     # 不并发（表写入别打架）
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install --quiet gspread google-auth
+
+      # 跨轮状态（去重用的缓存）——丢了也能从表 seed 重建，所以只是优化
+      - uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: agc-state-${{ github.run_id }}
+          restore-keys: agc-state-
+
+      - name: 还原策略文件（来自 Secrets，不进仓库）
+        env:
+          AGENT_CFG: ${{ secrets.AGENT_CRAWLER_CONFIG_JSON }}
+          YT_KW: ${{ secrets.YT_KEYWORDS_JSON }}
+          WATCHLIST: ${{ secrets.PARTNER_WATCHLIST_JSON }}
+          FH_SEED: ${{ secrets.FOLLOWER_SEED_JSONL }}
+        run: |
+          [ -n "$AGENT_CFG" ] && printf '%s' "$AGENT_CFG" > automation/agent_crawler_config.json || true
+          [ -n "$YT_KW" ] && printf '%s' "$YT_KW" > automation/yt_keywords.json || true
+          [ -n "$WATCHLIST" ] && printf '%s' "$WATCHLIST" > automation/partner_watchlist.json || true
+          [ -n "$FH_SEED" ] && printf '%s' "$FH_SEED" > automation/follower_history_seed.jsonl || true
+          echo "策略文件已还原"
+
+      - name: 写入服务账号凭据（来自 Secrets，不进仓库）
+        env:
+          SA: ${{ secrets.GSPREAD_SA_JSON }}
+        run: |
+          mkdir -p .secrets state
+          printf '%s' "$SA" > .secrets/sa.json
+
+      - name: 跑一轮发现
+        env:
+          AGENT_CRAWLER_SA: .secrets/sa.json
+          AGENT_CRAWLER_SHEET_ID: ${{ secrets.AGENT_CRAWLER_SHEET_ID }}
+          AGENT_CRAWLER_STATE: state/agent_crawler_state.json
+          AGENT_CRAWLER_CONFIG: automation/agent_crawler_config.json
+          AGENT_CRAWLER_ALERTS: state/alerts.log
+        run: python3 automation/find-agents-crawler.py --depth 2 --max-new 40
+
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: state
+          key: agc-state-${{ github.run_id }}
+
+      - name: 摘要（写进 Action 日志，便于巡检）
+        if: always()
+        run: tail -25 state/alerts.log 2>/dev/null || true

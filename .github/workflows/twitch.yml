@@ -1,0 +1,41 @@
+# Twitch 发现 · GitHub Actions 定时（设备关机也能跑）
+# 依赖：Twitch App 凭据(Secrets) + Google 服务账号(Secret) —— 官方 helix API，无需浏览器/session。
+# 口径：casino/非casino 类目二分 → 4 张表；KOL≥5000（高价值国家/专属语言打对折）→ 未达标全进 KOC；
+#       去重主键 twitch:<user_id>。
+# 2026-10-08: 定时已合并到 kick-twitch.yml（省 Actions 分钟额度）；本文件只保留手动触发。
+name: twitch-discover
+
+on:
+  workflow_dispatch:            # 手动触发（首次验证 / 补跑）
+
+concurrency:
+  group: twitch-discover
+  cancel-in-progress: false     # 不并发（表写入别打架）
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install --quiet gspread google-auth
+
+      - name: 写入服务账号凭据（来自 Secrets，不进仓库）
+        env:
+          SA: ${{ secrets.GSPREAD_SA_JSON }}
+        run: |
+          mkdir -p .secrets
+          printf '%s' "$SA" > .secrets/sa.json
+
+      - name: 跑一轮 Twitch 发现
+        env:
+          GSPREAD_SA: .secrets/sa.json
+          DISCOVER_SHEET_ID: ${{ secrets.DISCOVER_SHEET_ID }}
+          TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
+          TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
+          TWITCH_MAX_NEW: '60'
+          TWITCH_MAX_PAGES: '3'
+        run: python3 automation/twitch_discover_cloud.py --apply

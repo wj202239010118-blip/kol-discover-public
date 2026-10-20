@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""fill_contacts_cloud.py — 云上「联系方式」补全腿（**并进 kick-twitch.yml**，不额外占额度）。
+
+同一条腿的本机版是 `~/scripts/fill-contacts.py`。云上这份解决三件事：
+
+  · **设备关机也跑**（GitHub Actions）—— 本机那版是 nohup loop，不跨重启；
+  · **不额外占 Actions 分钟额度**：GitHub 私有仓库免费 2000 分钟/月，`kick-twitch.yml`
+    每小时跑已吃 1440 分钟 —— 所以**不新开定时 workflow**，只在同一个 job 里多跑一步；
+  · 表里新写的空行下一轮（≤1h）就被补上。
+
+## 做什么
+
+扫 4 张发现表 → 挑「联系方式」为空、**建联腿**含 `cloud`/`streamscharts`、
+**且时间戳在最近 `--days` 天内**的行：
+
+  · Twitch → `/helix/users` 的 `description`（批量 100 个 login/次）→ 正则提邮箱/TG/WA
+  · 只补空、绝不覆盖；按行号批量写回
+
+**排序很关键**：候选按入库时间【新→旧】排序，`--limit` 截断时优先保住最新的行 ——
+否则会像首版那样一直卡在表头部的老行（那些基本是提不到的），新行永远轮不到。
+老行由本机 `fill-contacts.py`（有 `fill_contacts_tried.json` 记账）兜底。
+
+## 为什么限定这几个条件（2026-10-12 实测，见 ~/scripts/fill-contacts.py 文件头）
+
+| 来源腿 | description 有邮箱 | 处理 |
+|---|---|---|
+| twitch-cloud | **40%** | ✅ 补 |
+| streamscharts-free | 27% | ✅ 补 |
+| 邮件腿 / 漏出 | **0%**（discover-runner 落表时就提取过了） | ❌ 跳过 |
+| kick（任意腿） | **0%**（Kick API 的 user.bio 里就没有邮箱；实测 0/30） | ❌ 不处理 |
+
+云端是无状态的（每次 Actions 都是新容器），没有本机那份 `fill_contacts_tried.json`，
+所以用**时间戳窗口**（`--days`）+ **新→旧排序**把范围收住。
+
+env（Secrets，与 kick-twitch.yml 相同）：
+  GSPREAD_SA / DISCOVER_SHEET_ID / TWITCH_CLIENT_ID / TWITCH_CLIENT_SECRET
+用法：python3 automation/fill_contacts_cloud.py [--apply] [--limit 800] [--days 3]
+"""
+import argparse
+import os
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
+import twitch_discover_cloud as T          # 复用 token()/hdr()/_json()/users_desc()/RE_*
+
+TABLES = ["casinoKOL", "钓KOC", "非casinoKOL", "非casinoKOC"]
+COL = "联系方式"
+LEG_COL = "建联腿"
+TS_COL = "时间戳"
+DEFAULT_LEGS = "cloud,streamscharts"
+
+
+def extract_contact(bio):
+    """简介文本 → 「联系方式」列的值。
+
+    ⚠️ 格式必须与 `discover-runner.extract_contact_and_socials` / `~/scripts/fill-contacts.py`
+    一致（表里既有样本就是 `邮箱: mailto:x@y`）—— 别改用裸邮箱，否则同列两种写法。
+    """
+    bio = bio or ""
+    parts = []
+    m = T.RE_EMAIL.search(bio)
+    if m:
+        parts.append("邮箱: mailto:%s" % m.group(0))
+    m = T.RE_TG.search(bio)
+    if m:
+        parts.append("TG: https://t.me/%s" % m.group(1))
+    m = T.RE_WA.search(bio)
+    if m:
+        parts.append("WA: https://wa.me/%s" % m.group(1))
+    return ", ".join(parts)
+
+
+def _ts_epoch(ts):
+    """表内「时间戳」是本地 IST(UTC+5:30) 的 '%Y-%m-%d %H:%M'；容器是 UTC —— 差 5.5h，
+    天级窗口下不构成问题。解析不了返回 None（调用方会当作超期丢弃）。"""
+    try:
+        return time.mktime(time.strptime(str(ts).strip(), "%Y-%m-%d %H:%M"))
+    except Exception:
+        return None
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--apply", action="store_true", help="真写表（默认干跑）")
+    ap.add_argument("--limit", type=int, default=800, help="本轮最多补多少行")
+    ap.add_argument("--days", type=int, default=3, help="只看最近 N 天入库的行（云端无 tried 状态）")
+    ap.add_argument("--legs", default=DEFAULT_LEGS, help="建联腿需含这些子串（all=不过滤）")
+    a = ap.parse_args()
+
+    legs_filter = [] if a.legs.strip().lower() == "all" else \
+        [s.strip() for s in a.legs.split(",") if s.strip()]
+
+    sheet_id = os.environ.get("DISCOVER_SHEET_ID", "")
+    sa_file = os.environ.get("GSPREAD_SA", ".secrets/sa.json")
+    if not sheet_id:
+        print("❌ 缺 DISCOVER_SHEET_ID", file=sys.stderr)
+        return 1
+
+    import gspread
+    import _gspread429; _gspread429.patch()   # 429 配额自动重试
+    sh = gspread.service_account(filename=sa_file).open_by_key(sheet_id)
+
+    todo, skipped_leg, skipped_old = [], 0, 0
+    for nm in TABLES:
+        try:
+            ws = sh.worksheet(nm)
+        except Exception as e:
+            print("⚠️ 打不开 %s: %s" % (nm, str(e)[:60]), file=sys.stderr)
+            continue
+        try:
+            hdr = ws.row_values(1)
+        except Exception as e:
+            print("⚠️ [%s] 读表头失败: %s" % (nm, str(e)[:60]), file=sys.stderr)
+            continue
+        if not hdr:
+            continue
+        need = ["平台", "用户名/Slug", COL, LEG_COL]
+        miss = [c for c in need if c not in hdr]
+        if miss:
+            print("⚠️ %s 缺列 %s → 跳过" % (nm, miss), file=sys.stderr)
+            continue
+        # ⚠️ 只读需要的 5 列，**不要 get_all_values()** —— 4 表 9 万行 × 28 列要传几十 MB、
+        #    耗时 ~60s，会把 kick-twitch job 从 2 分钟顶到 3 分钟（Actions 按分钟计费，
+        #    私有仓库免费额度 2000/月，直接超）。读 5 列 ≈ 1/5 数据量。
+        want = ["平台", "用户名/Slug", COL, LEG_COL] + ([TS_COL] if TS_COL in hdr else [])
+        cols = {}
+        for cname in want:
+            try:
+                cols[cname] = ws.col_values(hdr.index(cname) + 1)
+            except Exception as e:
+                print("⚠️ [%s] 读列 %s 失败: %s" % (nm, cname, str(e)[:50]), file=sys.stderr)
+                cols[cname] = []
+        nrow = max([len(v) for v in cols.values()] or [0])
+
+        def g(cname, i):
+            v = cols.get(cname) or []
+            return v[i] if i < len(v) else ""
+
+        n_tw = n_empty = 0
+        for i in range(1, nrow):                       # i=0 是表头；真实行号 = i+1
+            if g("平台", i).strip().lower() != "twitch":   # 只做 Twitch（Kick 的 bio 里 0% 有邮箱）
+                continue
+            n_tw += 1
+            if g(COL, i).strip():
+                continue                                # 已有 → 不覆盖
+            n_empty += 1
+            leg = g(LEG_COL, i).strip()
+            if legs_filter and not any(s in leg for s in legs_filter):
+                skipped_leg += 1
+                continue
+            slug = g("用户名/Slug", i).strip()
+            if not slug:
+                continue
+            ts = _ts_epoch(g(TS_COL, i)) if TS_COL in cols else None
+            if ts is None or (time.time() - ts) >= a.days * 86400:
+                skipped_old += 1
+                continue
+            todo.append((ts, nm, i + 1, slug))
+        print("[%s] Twitch %d 行 / 空联系方式 %d 行" % (nm, n_tw, n_empty), file=sys.stderr)
+
+    # 按入库时间【新→旧】：limit 截断时优先保住最新的行（老行由本机 fill-contacts 兜底）
+    todo.sort(key=lambda x: -x[0])
+    print("▶ 待补 %d 行（跳过：来源腿不匹配 %d / 超 %d 天或时间戳不可解析 %d）"
+          % (len(todo), skipped_leg, a.days, skipped_old), file=sys.stderr)
+    todo = todo[:a.limit]
+    if not todo:
+        print("（没有待补的行）", file=sys.stderr)
+        return 0
+
+    # ── 批量取简介（100 个 login/次） ──
+    logins = [s for _, _, _, s in todo]
+    descs = T.users_desc(logins)
+    hit = sum(1 for l in logins if descs.get(str(l).lower()))
+    print("▶ /helix/users 命中简介 %d/%d" % (hit, len(logins)), file=sys.stderr)
+
+    results = []
+    for ts, nm, rn, slug in todo:
+        c = extract_contact(descs.get(str(slug).lower(), ""))
+        if c:
+            results.append((nm, rn, slug, c))
+    rate = 100.0 * len(results) / max(1, len(todo))
+    print("▶ 提到联系方式 %d/%d（%.0f%%）" % (len(results), len(todo), rate), file=sys.stderr)
+    for nm, rn, slug, c in results[:5]:
+        print("   %-14s %-22s → %s" % (nm, slug, c[:64]), file=sys.stderr)
+    if not a.apply:
+        print("（干跑；加 --apply 才写表）", file=sys.stderr)
+        return 0
+
+    # ── 写回（按扫描时记下的行号，不做 slug 反查 → 天然免疫同名跨平台撞行） ──
+    import gspread.utils
+    by_tab = {}
+    for nm, rn, slug, c in results:
+        by_tab.setdefault(nm, []).append((rn, c))
+    written, failed = 0, 0
+    for nm, pairs in by_tab.items():
+        ws = sh.worksheet(nm)
+        hdr = ws.row_values(1)
+        j = hdr.index(COL) + 1
+        for i in range(0, len(pairs), 200):          # 分批，单次 batch 不过大
+            batch = [{"range": gspread.utils.rowcol_to_a1(rn, j), "values": [[c]]}
+                     for rn, c in pairs[i:i + 200]]
+            try:
+                ws.batch_update(batch, value_input_option="USER_ENTERED")
+                written += len(batch)
+            except Exception as e:
+                failed += len(batch)
+                print("  ⚠️ [%s] 写表失败（保留待下轮）: %s" % (nm, str(e)[:80]), file=sys.stderr)
+    print("▶ 已写 %d 处 / 失败 %d 处" % (written, failed), file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

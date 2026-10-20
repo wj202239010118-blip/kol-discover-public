@@ -1,0 +1,18 @@
+# ── 策略 / 名单：不进仓库（私密），由 workflow 从 GitHub Secrets 还原 ──
+automation/partner_watchlist.json        # 合作主播名单
+automation/agent_crawler_config.json     # 论坛源 / 阈值 / 关键词
+automation/yt_keywords.json              # YouTube 搜索关键词 + 市场
+automation/follower_history_seed.jsonl   # 粉丝历史种子（含主播标识）
+*.local.json
+
+# 凭据
+.secrets/
+sa.json
+*.pem
+.env
+
+# 运行产物
+logs/
+out/
+__pycache__/
+*.pyc

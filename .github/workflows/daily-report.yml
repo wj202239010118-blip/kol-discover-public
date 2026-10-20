@@ -1,0 +1,38 @@
+# 云腿日报 · 每天 18:00 IST（= 12:30 UTC）发到 Lark 内部通知群
+#
+# 内容：过去 24h 各平台发现多少人写进表（casinoKOL / 钓KOC / 非casinoKOL / 非casinoKOC）。
+# 触发：由 Cloudflare Worker gh-discover-cron 的 cron `30 12 * * *` 调 workflow_dispatch。
+# 注意：自定义机器人消息撤不回 —— 只发内部通知群，内容须准确。
+name: daily-report
+
+on:
+  workflow_dispatch:     # 定时由 Worker 触发（GitHub schedule 不可靠，不用）
+
+concurrency:
+  group: daily-report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install --quiet gspread google-auth
+
+      - name: 写入服务账号凭据（来自 Secrets，不进仓库）
+        env:
+          SA: ${{ secrets.GSPREAD_SA_JSON }}
+        run: |
+          mkdir -p .secrets
+          printf '%s' "$SA" > .secrets/sa.json
+
+      - name: 生成并发日报
+        env:
+          GSPREAD_SA: .secrets/sa.json
+          DISCOVER_SHEET_ID: ${{ secrets.DISCOVER_SHEET_ID }}
+          LARK_WEBHOOK: ${{ secrets.LARK_WEBHOOK }}
+        run: python3 automation/daily_report.py

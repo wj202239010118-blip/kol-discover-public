@@ -1,0 +1,59 @@
+# YouTube 发现 · GitHub Actions 定时（设备关机也能跑）
+# 依赖：YouTube Data API v3 Key(Secret) + Google 服务账号(Secret) —— 纯官方 API。
+#
+# ⚠️ 配额约束：YouTube Data API 默认 **10,000 units/天**。
+#   search.list = 100 units/次 → 一轮 12 个关键词 ≈ 1,200 units → **每天最多 8 轮**。
+#   所以 cron 定每 3 小时一次（8 轮/天 ≈ 9,600 units，留余量），别再加密。
+#
+# 口径：按关键词垂类分流（casino 词→casinoKOL/钓KOC；sports/预测/crypto→非casino 两表）；
+#       KOL ≥20000 subs（高价值国家对折 →10000）→ 未达标全进 KOC；去重主键 youtube:<channel_id>。
+name: youtube-discover
+
+on:
+  # 2026-10-09: 定时改由 Cloudflare Worker `gh-discover-cron` 调 workflow_dispatch（可靠触发）；
+  #   原 schedule 每 3h（8 轮/天）已弃用。保留手动触发。
+  workflow_dispatch:            # 手动触发（首次验证 / 补跑）
+
+concurrency:
+  group: youtube-discover
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install --quiet gspread google-auth
+
+      - name: 还原策略文件（来自 Secrets，不进仓库）
+        env:
+          AGENT_CFG: ${{ secrets.AGENT_CRAWLER_CONFIG_JSON }}
+          YT_KW: ${{ secrets.YT_KEYWORDS_JSON }}
+          WATCHLIST: ${{ secrets.PARTNER_WATCHLIST_JSON }}
+          FH_SEED: ${{ secrets.FOLLOWER_SEED_JSONL }}
+        run: |
+          [ -n "$AGENT_CFG" ] && printf '%s' "$AGENT_CFG" > automation/agent_crawler_config.json || true
+          [ -n "$YT_KW" ] && printf '%s' "$YT_KW" > automation/yt_keywords.json || true
+          [ -n "$WATCHLIST" ] && printf '%s' "$WATCHLIST" > automation/partner_watchlist.json || true
+          [ -n "$FH_SEED" ] && printf '%s' "$FH_SEED" > automation/follower_history_seed.jsonl || true
+          echo "策略文件已还原"
+
+      - name: 写入服务账号凭据（来自 Secrets，不进仓库）
+        env:
+          SA: ${{ secrets.GSPREAD_SA_JSON }}
+        run: |
+          mkdir -p .secrets
+          printf '%s' "$SA" > .secrets/sa.json
+
+      - name: 跑一轮 YouTube 发现
+        env:
+          GSPREAD_SA: .secrets/sa.json
+          DISCOVER_SHEET_ID: ${{ secrets.DISCOVER_SHEET_ID }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          YT_MAX_KW: '12'
+          YT_KOL_MIN: '20000'
+        run: python3 automation/youtube_discover_cloud.py --apply

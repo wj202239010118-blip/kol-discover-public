@@ -1,0 +1,57 @@
+# 合作主播「粉丝突增判定」· GitHub Actions（2026-10-09）
+#
+# 搬自本机 cron 09:45 的 `follower_history.py --ingest --judge-all`（口径一致，见
+# automation/follower_judge_cloud.py）。**纯计算**：不再打平台，数据源是 #3 的产出。
+#   ① 种子 automation/follower_history_seed.jsonl（本机 12 天历史，一次性起点）
+#   ② 云表 tab「合作快照」（partner-trend workflow 每日写入）
+# 判定：7 天窗口涨幅 ≥15% 且同期内容事件少（VOD<2 或 时长<3h）→ 命中「突增无内容事件」；
+#       样本 <2 天不判。命中行写 tab「粉丝突增」。
+#
+# 触发：① workflow_dispatch；② schedule 每日 05:00 UTC（10:30 IST，排在 #3 的 04:30 UTC 之后）。
+name: follower-judge
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 5 * * *'
+
+concurrency:
+  group: follower-judge
+  cancel-in-progress: false
+
+jobs:
+  judge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install --quiet gspread google-auth
+
+      - name: 还原策略文件（来自 Secrets，不进仓库）
+        env:
+          AGENT_CFG: ${{ secrets.AGENT_CRAWLER_CONFIG_JSON }}
+          YT_KW: ${{ secrets.YT_KEYWORDS_JSON }}
+          WATCHLIST: ${{ secrets.PARTNER_WATCHLIST_JSON }}
+          FH_SEED: ${{ secrets.FOLLOWER_SEED_JSONL }}
+        run: |
+          [ -n "$AGENT_CFG" ] && printf '%s' "$AGENT_CFG" > automation/agent_crawler_config.json || true
+          [ -n "$YT_KW" ] && printf '%s' "$YT_KW" > automation/yt_keywords.json || true
+          [ -n "$WATCHLIST" ] && printf '%s' "$WATCHLIST" > automation/partner_watchlist.json || true
+          [ -n "$FH_SEED" ] && printf '%s' "$FH_SEED" > automation/follower_history_seed.jsonl || true
+          echo "策略文件已还原"
+
+      - name: 写入服务账号凭据（来自 Secrets，不进仓库）
+        env:
+          SA: ${{ secrets.GSPREAD_SA_JSON }}
+        run: |
+          mkdir -p .secrets
+          printf '%s' "$SA" > .secrets/sa.json
+
+      - name: 粉丝突增判定
+        env:
+          GSPREAD_SA: .secrets/sa.json
+          DISCOVER_SHEET_ID: ${{ secrets.DISCOVER_SHEET_ID }}
+        run: python3 automation/follower_judge_cloud.py --apply

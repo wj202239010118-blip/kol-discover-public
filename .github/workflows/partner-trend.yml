@@ -1,0 +1,68 @@
+# 合作主播「每日快照」· GitHub Actions（2026-10-09）
+#
+# 搬自本机 cron 09:30 的 partner_trend_collect.py（口径一致，见 automation/partner_trend_cloud.py）。
+# 只读：Kick 公开 API v2（频道 followers + 近 6 场 VOD 的 viewer_count/views/时长）。
+# 不依赖任何 TG/WA 账号、不依赖本机 sheet-server —— 设备关机也能跑。
+#
+# 落点：Google 表 tab「合作快照」写摘要行（每主播每天 1 行，幂等）；原始明细走 artifact。
+#
+# 触发：① 手动 workflow_dispatch（首次验证/补跑）；② GitHub schedule 每日一次
+#   （schedule 是 best-effort、会延迟，但「每日快照」不在乎准点；待 CF Worker cron 排期后再收敛）。
+name: partner-trend
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 4 * * *'      # 04:30 UTC = 10:00 IST（错开本机原 09:30）
+
+concurrency:
+  group: partner-trend
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install --quiet gspread google-auth curl_cffi
+
+      - name: 还原策略文件（来自 Secrets，不进仓库）
+        env:
+          AGENT_CFG: ${{ secrets.AGENT_CRAWLER_CONFIG_JSON }}
+          YT_KW: ${{ secrets.YT_KEYWORDS_JSON }}
+          WATCHLIST: ${{ secrets.PARTNER_WATCHLIST_JSON }}
+          FH_SEED: ${{ secrets.FOLLOWER_SEED_JSONL }}
+        run: |
+          [ -n "$AGENT_CFG" ] && printf '%s' "$AGENT_CFG" > automation/agent_crawler_config.json || true
+          [ -n "$YT_KW" ] && printf '%s' "$YT_KW" > automation/yt_keywords.json || true
+          [ -n "$WATCHLIST" ] && printf '%s' "$WATCHLIST" > automation/partner_watchlist.json || true
+          [ -n "$FH_SEED" ] && printf '%s' "$FH_SEED" > automation/follower_history_seed.jsonl || true
+          echo "策略文件已还原"
+
+      - name: 写入服务账号凭据（来自 Secrets，不进仓库）
+        env:
+          SA: ${{ secrets.GSPREAD_SA_JSON }}
+        run: |
+          mkdir -p .secrets
+          printf '%s' "$SA" > .secrets/sa.json
+
+      - name: 合作主播每日快照
+        env:
+          GSPREAD_SA: .secrets/sa.json
+          DISCOVER_SHEET_ID: ${{ secrets.DISCOVER_SHEET_ID }}
+          TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}          # 4/17 是 Twitch 主播
+          TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
+        run: python3 automation/partner_trend_cloud.py --apply
+
+      - name: 上传原始明细（artifact）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: partner-trend-raw-${{ github.run_id }}
+          path: automation/partner_trend_raw.jsonl
+          if-no-files-found: ignore
+          retention-days: 90

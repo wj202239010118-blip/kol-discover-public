@@ -1,0 +1,69 @@
+# 云端发现腿自检 · GitHub Actions（不依赖本机）
+#
+# 为什么：原来「腿坏没坏」由本机判定（cs_health_watch / discover-gap-watchdog 读 127.0.0.1:8765
+#   + osascript 通知）——本机关机就没人知道云腿是否正常。本 workflow 把自检也搬上云。
+#
+# 检查：4 张发现表最新写入新鲜度 + 各腿最近一轮 run；结论写进 run 摘要（Actions 页面可见）。
+# 异常时发 Lark 内部通知群（幂等：只在「正常↔异常」切换时发一次，不重复轰炸）；正常不打扰。
+#
+# 频率：每 6 小时（自检不要求准时）。刻意低频，避免挤占私有仓库 2000 分钟/月免费额度
+#   （kick-twitch 已占 ~1440/月）。
+name: health-check
+
+on:
+  # 双触发（刻意，与其它腿不同）：
+  #   ① Cloudflare Worker gh-discover-cron（可靠，每 6h）—— 主源
+  #   ② GitHub schedule（不可靠但【独立于 PAT/Worker】）—— 哨兵：
+  #      一旦 Worker/PAT 失效，它仍可能跑到自检 → 在 run 摘要里暴露「kick-twitch run 太旧」。
+  #   原则：监控必须有不依赖“被监控对象”的触发源，否则单点一挂就完全失明。
+  schedule:
+    - cron: '7 */6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: health-check
+  cancel-in-progress: false
+
+permissions:
+  actions: read     # 读 /repos/.../actions/runs 判断各腿最近一轮 run（默认 GITHUB_TOKEN 不含 → 403）
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install --quiet gspread google-auth
+
+      # 告警去重状态（跨轮持久）—— 纯 GitHub 云侧 cache，不依赖本机
+      - uses: actions/cache/restore@v4
+        with:
+          path: .state
+          key: health-state-${{ github.run_id }}
+          restore-keys: health-state-
+
+      - name: 写入服务账号凭据（来自 Secrets，不进仓库）
+        env:
+          SA: ${{ secrets.GSPREAD_SA_JSON }}
+        run: |
+          mkdir -p .secrets
+          printf '%s' "$SA" > .secrets/sa.json
+
+      - name: 自检（写进 run 摘要）
+        env:
+          GSPREAD_SA: .secrets/sa.json
+          DISCOVER_SHEET_ID: ${{ secrets.DISCOVER_SHEET_ID }}
+          GITHUB_TOKEN: ${{ github.token }}
+          LARK_WEBHOOK: ${{ secrets.LARK_WEBHOOK }}
+          HEALTH_STATE: .state/health_state.json
+        run: python3 automation/health_check.py
+
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: .state
+          key: health-state-${{ github.run_id }}
