@@ -26,6 +26,8 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install --quiet gspread google-auth curl_cffi
+      # 2026-10-20: --deep 的 YouTube 路需要 yt-dlp（抓视频描述里的商务邮箱）
+      - run: pip install --quiet yt-dlp
 
       - name: 写入服务账号凭据（来自 Secrets，不进仓库）
         env:
@@ -83,4 +85,9 @@ jobs:
             echo "⏭ 本轮跳过（UTC ${H} 点，本步每 3 小时跑一次）"
             exit 0
           fi
-          python3 automation/fill_contacts_cloud.py --apply --limit 800 --days 1
+          # 2026-10-20: 加 --deep —— 第一路（Twitch 简介）没提到联系方式时，
+          #   追加 X bio / YouTube 视频描述 / link-in-bio 三路。
+          #   --deep-limit 20 = 每轮最多深度抓 20 行（单行 25s 预算），
+          #   实测约 +2 分钟，仍在 45 分钟 timeout 内。
+          python3 automation/fill_contacts_cloud.py --apply --limit 800 --days 1 \
+            --deep --deep-limit 20
