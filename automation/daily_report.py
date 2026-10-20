@@ -5,7 +5,8 @@
 2026-10-09：由 Cloudflare Worker 每天 18:00 IST（= 12:30 UTC）触发，发到 Lark 内部通知群。
 口径：只统计 **云腿 + KOL 表**：
       ① 表：只读 casinoKOL / 非casinoKOL（KOC 表 钓KOC/非casinoKOC **不计入**）；
-      ② 来源：按「建联腿」列过滤值含 `cloud`（kick-cloud/twitch-cloud/youtube-cloud），本机 streamscharts-free 不计；
+      ② 来源：**2026-10-20 起「建联腿」已改为「建联时间」**（记发邮件建联的日期），
+         原「按建联腿含 cloud 过滤」的口径作废 —— 该列现在为空表示还没发过邮件建联；
       ③ 窗口：取「时间戳」列在最近 REPORT_WINDOW_H(默认24) 小时内的行，按「平台」分组计数。
 """
 import os
@@ -57,18 +58,15 @@ def main():
         try:
             ws = sh.worksheet(t)
             header = ws.row_values(1)
-            leg_i = (header.index("建联腿") + 1) if "建联腿" in header else len(header)
+            # 2026-10-20：「建联腿」已改为「建联时间」（空=还没发邮件建联），
+            #   不再读这一列 —— 日报改为统计**全部新增**，不按腿过滤。
             ts_col = ws.col_values(1)[1:]
             plat_col = ws.col_values(2)[1:]
-            leg_col = ws.col_values(leg_i)[1:]
         except Exception as e:
             print("[report] 读表失败 %s: %s" % (t, e), file=sys.stderr)
             continue
         n = 0
         for i, ts in enumerate(ts_col):
-            leg = (leg_col[i] if i < len(leg_col) else "").strip()
-            if "cloud" not in leg:          # 只算云腿；本机 streamscharts-free 等不计
-                continue
             dt = _parse_ist(ts)
             if dt and dt >= cutoff:
                 plat = (plat_col[i] if i < len(plat_col) else "").strip() or "未知"
@@ -77,7 +75,7 @@ def main():
         per_table[t] = n
 
     total = sum(per_platform.values())
-    lines = ["📊 云腿 KOL 日报（过去 %gh 新增入表）" % WINDOW_H,
+    lines = ["📊 KOL 日报（过去 %gh 新增入表）" % WINDOW_H,
              "统计时间：%s (IST)" % now.strftime("%Y-%m-%d %H:%M"),
              ""]
     if total == 0:

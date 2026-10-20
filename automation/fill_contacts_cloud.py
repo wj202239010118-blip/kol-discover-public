@@ -11,8 +11,8 @@
 
 ## 做什么
 
-扫 4 张发现表 → 挑「联系方式」为空、**建联腿**含 `cloud`/`streamscharts`、
-**且时间戳在最近 `--days` 天内**的行：
+扫 4 张发现表 → 挑「联系方式」为空的全部行（2026-10-20 用户：不看任何标记，
+因为我们自己的网红全都要补；已有邮箱/TG/WA 的自动跳过）：
 
   · Twitch → `/helix/users` 的 `description`（批量 100 个 login/次）→ 正则提邮箱/TG/WA
   · 只补空、绝不覆盖；按行号批量写回
@@ -50,9 +50,9 @@ import twitch_discover_cloud as T          # 复用 token()/hdr()/_json()/users_
 
 TABLES = ["casinoKOL", "钓KOC", "非casinoKOL", "非casinoKOC"]
 COL = "联系方式"
-LEG_COL = "建联腿"
+LEG_COL = "建联时间"      # 2026-10-20 改造：原「建联腿」→「建联时间」（记发邮件建联的日期）
 TS_COL = "时间戳"
-DEFAULT_LEGS = "cloud,streamscharts"
+DEFAULT_LEGS = ""          # 2026-10-20：不再按腿筛，留空=不过滤
 
 
 def extract_contact(bio):
@@ -167,7 +167,8 @@ def main():
     ap.add_argument("--apply", action="store_true", help="真写表（默认干跑）")
     ap.add_argument("--limit", type=int, default=800, help="本轮最多补多少行")
     ap.add_argument("--days", type=int, default=3, help="只看最近 N 天入库的行（云端无 tried 状态）")
-    ap.add_argument("--legs", default=DEFAULT_LEGS, help="建联腿需含这些子串（all=不过滤）")
+    ap.add_argument("--legs", default=DEFAULT_LEGS,
+                    help="（已废弃）原来按建联腿筛行；现在默认不过滤，所有联系方式为空的行都补")
     ap.add_argument("--deep-limit", type=int, default=20,
                     help="--deep 时最多深度抓多少行（每行可能几秒，控 Actions 分钟数）")
     ap.add_argument("--deep", action="store_true",
@@ -229,12 +230,13 @@ def main():
                 continue
             n_tw += 1
             if g(COL, i).strip():
-                continue                                # 已有 → 不覆盖
+                continue        # 已有邮箱/TG/WA 等 → 跳过（用户：已有的不重复找、不覆盖）
             n_empty += 1
-            leg = g(LEG_COL, i).strip()
-            if legs_filter and not any(s in leg for s in legs_filter):
-                skipped_leg += 1
-                continue
+            if legs_filter:                      # 默认空 → 不再按腿过滤
+                leg = g(LEG_COL, i).strip() if LEG_COL in cols else ""
+                if not any(s_ in leg for s_ in legs_filter):
+                    skipped_leg += 1
+                    continue
             slug = g("用户名/Slug", i).strip()
             if not slug:
                 continue
