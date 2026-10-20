@@ -75,6 +75,84 @@ def extract_contact(bio):
     return ", ".join(parts)
 
 
+def _try_imports():
+    """按需加载三路增强模块（缺哪个就跳过哪路，不影响主线）。"""
+    mods = {}
+    for name in ("x_profile_fetch", "yt_desc_fetch", "kol_identity"):
+        try:
+            mods[name] = __import__(name)
+        except Exception as e:
+            print("  [warn] %s 不可用: %s" % (name, str(e)[:60]), file=sys.stderr)
+    return mods
+
+
+def deep_enrich(slug, bio, mods, budget_s=25.0):
+    """第一路（Twitch 简介）没提到时，走二/三路再试一次。
+
+    2026-10-20 合并自 contact_enrich.py（借鉴 nanoinfluencer 的 Email Match 三路）：
+      · X bio          —— fxTwitter 公开接口，免登录，最快
+      · YouTube 视频描述 —— 很多主播把商务邮箱放这里，比 About 页更全（要 yt-dlp，慢）
+      · link-in-bio    —— Linktree 那类聚合页
+
+    返回：与 extract_contact 同格式的联系方式串（拿不到返回空串）。
+    budget_s：单行总预算，超时就放弃 —— 云端 Actions 按分钟计费，不能被单行拖死。
+    """
+    import time as _t
+    t0 = _t.time()
+    texts = []
+
+    # 从 bio 里找各平台 handle（不联网）
+    identity = mods.get("kol_identity")
+    links = {}
+    if identity:
+        try:
+            links = identity.parse_links(bio or "")
+        except Exception:
+            links = {}
+
+    # ② X bio
+    xf = mods.get("x_profile_fetch")
+    x_handles = (links.get("twitter") or links.get("x") or [])
+    if xf and x_handles and (_t.time() - t0) < budget_s:
+        try:
+            j = xf.fetch(x_handles[0].lstrip("@"))
+            desc = ((j.get("user") or {}).get("description") or "")
+            if desc:
+                texts.append(desc)
+        except Exception:
+            pass
+
+    # ③ YouTube 视频描述（慢，只在还有预算时做）
+    yd = mods.get("yt_desc_fetch")
+    yt = links.get("youtube") or []
+    if yd and yt and (_t.time() - t0) < budget_s * 0.6:
+        try:
+            url = yt[0] if str(yt[0]).startswith("http") else \
+                "https://www.youtube.com/@%s/videos" % str(yt[0]).lstrip("@")
+            desc = yd.fetch_desc(url, 2)
+            if desc and not str(desc).startswith("__ERR__"):
+                texts.append(desc)
+        except Exception:
+            pass
+
+    # ④ link-in-bio 聚合页（可能含邮箱）
+    ki = mods.get("kol_identity")
+    if ki and (_t.time() - t0) < budget_s * 0.8:
+        try:
+            page = ki.expand(bio or "", do_fetch=True, gap=0.0)
+            for k, v in (page or {}).items():
+                if isinstance(v, list):
+                    texts.append(" ".join(str(x) for x in v))
+        except Exception:
+            pass
+
+    for t in texts:
+        c = extract_contact(t)
+        if c:
+            return c
+    return ""
+
+
 def _ts_epoch(ts):
     """表内「时间戳」是本地 IST(UTC+5:30) 的 '%Y-%m-%d %H:%M'；容器是 UTC —— 差 5.5h，
     天级窗口下不构成问题。解析不了返回 None（调用方会当作超期丢弃）。"""
@@ -90,6 +168,10 @@ def main():
     ap.add_argument("--limit", type=int, default=800, help="本轮最多补多少行")
     ap.add_argument("--days", type=int, default=3, help="只看最近 N 天入库的行（云端无 tried 状态）")
     ap.add_argument("--legs", default=DEFAULT_LEGS, help="建联腿需含这些子串（all=不过滤）")
+    ap.add_argument("--deep-limit", type=int, default=20,
+                    help="--deep 时最多深度抓多少行（每行可能几秒，控 Actions 分钟数）")
+    ap.add_argument("--deep", action="store_true",
+                    help="第一路没提到时，追加 X bio / YouTube 描述 / link-in-bio（慢，默认关）")
     a = ap.parse_args()
 
     legs_filter = [] if a.legs.strip().lower() == "all" else \
@@ -183,6 +265,24 @@ def main():
         c = extract_contact(descs.get(str(slug).lower(), ""))
         if c:
             results.append((nm, rn, slug, c))
+    # ── 二/三路：对第一路没提到的行再试（--deep 才开）────────────────────
+    if a.deep and len(results) < len(todo):
+        mods = _try_imports()
+        got = {r[2] for r in results}
+        miss = [(ts, nm, rn, sl) for ts, nm, rn, sl in todo if sl not in got]
+        print("▶ 深度抓取：%d 行待补（X bio / YouTube 描述 / link-in-bio）" % len(miss), file=sys.stderr)
+        deep_hits = 0
+        for ts, nm, rn, sl in miss[:a.deep_limit]:
+            bio = descs.get(str(sl).lower(), "")
+            if not bio and not sl:
+                continue
+            c = deep_enrich(sl, bio, mods)
+            if c:
+                results.append((nm, rn, sl, c))
+                deep_hits += 1
+                print("   ✔ %-20s %s" % (sl, c[:60]), file=sys.stderr)
+        print("▶ 深度抓取额外命中 %d/%d" % (deep_hits, min(len(miss), a.deep_limit)), file=sys.stderr)
+
     rate = 100.0 * len(results) / max(1, len(todo))
     print("▶ 提到联系方式 %d/%d（%.0f%%）" % (len(results), len(todo), rate), file=sys.stderr)
     for nm, rn, slug, c in results[:5]:
