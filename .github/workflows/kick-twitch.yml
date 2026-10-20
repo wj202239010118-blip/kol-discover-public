@@ -91,3 +91,23 @@ jobs:
           #   实测约 +2 分钟，仍在 45 分钟 timeout 内。
           python3 automation/fill_contacts_cloud.py --apply --limit 800 --days 1 \
             --deep --deep-limit 20
+
+      - name: 候选优先级判定（Kick + Twitch）
+        # 2026-10-20: 用户要求「电脑关了也要能操作」——把本机版 discover_priority 搬到云上。
+        # 数据源改成直接读 4 张发现表（15MB 候选池进不了 Secret）。
+        # 默认 --dry-run：只出报告写进 job summary，**不覆盖发现表「状态」列**
+        # （那列还有「在库/已合作」等语义，等确认后再开 --apply）。
+        continue-on-error: true
+        env:
+          GSPREAD_SA: .secrets/sa.json
+          DISCOVER_SHEET_ID: ${{ secrets.DISCOVER_SHEET_ID }}
+          COOP_SNAPSHOT_JSON: ${{ secrets.COOP_SNAPSHOT_JSON }}
+        run: |
+          python3 automation/discover_priority_cloud.py --dry-run --top 15 \
+            --json priority_cloud.json 2>&1 | tee /tmp/prio.txt
+          {
+            echo "## 候选优先级（Kick + Twitch）"
+            echo '```'
+            grep -E "已合作库|优先联系 Top|共 " /tmp/prio.txt | head -30
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY
