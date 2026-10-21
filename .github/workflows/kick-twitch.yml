@@ -59,7 +59,8 @@ jobs:
           KICK_MAX_PAGES: '14'      # 2026-10-21: 全站在播 12,135 个 = 13 页（1000/页），14 页留余量 → **每轮全站读完**
           KICK_RETRY_STATE: state/kick_retry.json
           KICK_KOL_QUOTA: '140'     # KOL 先消化
-          KICK_KOC_QUOTA: '60'      # KOC 保底，不被 KOL 挤占
+          KICK_KOC_QUOTA: '60'      # KOC 保底；KOL 没用完的额度会动态让给 KOC
+          KICK_RPS: '3'             # 全局请求速率（429 治理，实测无节流时 29% 失败）
           GPT_THINK_KEY: ${{ secrets.GPT_THINK_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: python3 automation/kick_discover_cloud.py --apply
@@ -75,7 +76,7 @@ jobs:
           TWITCH_MAX_PAGES: '40'   # 2026-10-21: Just Chatting 3,851 个在播 = 39 页（100/页）→ 40 页 = 每个类目都读到底
           TWITCH_RETRY_STATE: state/twitch_retry.json
           TWITCH_KOL_QUOTA: '140'
-          TWITCH_KOC_QUOTA: '60'
+          TWITCH_KOC_QUOTA: '100'   # 2026-10-21: 实测每轮有 96 个待处理、只写 60 → 提到 100
         run: python3 automation/twitch_discover_cloud.py --apply
 
       # 2026-10-12: 联系方式补全一轮 —— 补「建联腿含 cloud/streamscharts 且联系方式为空」的行。

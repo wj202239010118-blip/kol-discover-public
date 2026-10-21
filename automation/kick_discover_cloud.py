@@ -22,6 +22,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -125,7 +126,26 @@ COUNTRY_LANG = {"阿根廷": "西班牙语", "智利": "西班牙语", "墨西�
 _TOKEN = {"v": "", "exp": 0.0}
 
 
+# 2026-10-21(429 治理): 实测一轮 691 个候选因 HTTP 429 丢弃（kick.com/api/v2 与 web.kick.com 都限）。
+#   加**全局令牌桶**：所有 Kick 请求共享一个速率上限（默认 3 req/s），比加并发有效。
+#   实测 6 workers 无节流 → 29% 失败；节流后应显著下降。
+_TH_LOCK = threading.Lock()
+_TH_NEXT = [0.0]
+_KICK_RPS = float(os.environ.get("KICK_RPS", "3"))
+
+
+def _throttle():
+    with _TH_LOCK:
+        now = time.time()
+        if _TH_NEXT[0] > now:
+            time.sleep(_TH_NEXT[0] - now)
+            now = time.time()
+        _TH_NEXT[0] = max(now, _TH_NEXT[0]) + 1.0 / max(0.5, _KICK_RPS)
+
+
 def _req(url, headers=None, timeout=20, data=None, cffi=True):
+    if "kick.com" in url or "kick.com" in str(url):
+        _throttle()
     h = dict(UA)
     if headers:
         h.update(headers)
@@ -416,7 +436,11 @@ def metas(slug, disp, bio, d, cat_name, viewers, chat=True):
     country, why = guess_country(bio, disp, d.get("country") or u.get("country"))
     # 语种：先靠 bio/名字（零成本）；聊天采样**按需** —— chat=False 时完全跳过。
     # 2026-10-09：调用方若已从榜单拿到语言码，就不该再花一次请求 + LLM 去猜。
-    lang = guess_lang(slug, disp, bio, chat_sample(slug, pages=1) if chat else [])
+    # 2026-10-21(省请求): 先只用 bio/名字判语种（零请求）；判不出才去采聊天样本。
+    #   原来无条件 chat_sample → 每个候选多一次 web.kick.com 请求，429 的主要来源。
+    lang = lang_from_text("%s %s %s" % (slug or "", disp or "", bio or ""))
+    if not lang:
+        lang = guess_lang(slug, disp, bio, chat_sample(slug, pages=1) if chat else [])
     mails, tg, wa = RE_EMAIL.findall(bio), RE_TG.findall(bio), RE_WA.findall(bio)
     others = (["TG:" + t for t in tg[:2]] + ["WA:" + w for w in wa[:2]])
     return {
@@ -584,11 +608,16 @@ def main():
     # ── 阶段 3：串行组行（按各表真实表头取用）+ KOL/KOC 配额 ───────────────
     _tier_done = {"kol": 0, "koc": 0}
     _over_quota = 0
+    # 2026-10-21: 按粉丝数降序处理 —— 粉丝多的更可能是 KOL，先把 KOL 配额填满；
+    #   剩下的额度（KOL 没填满的部分）动态让给 KOC，避免「KOL 名额空着、KOC 反而被卡」。
+    done_pairs.sort(key=lambda p: -int(((p[0][3] or {}).get("followers_count")
+                                        or (p[0][3] or {}).get("followersCount") or 0)))
     for (kind, slug, meta, d, disp), mm in done_pairs:
         if not mm:
             continue
         tier = "kol" if is_kol(mm["_followers"], mm["国家"], mm["语种"]) else "koc"
-        _q = KOL_QUOTA if tier == "kol" else KOC_QUOTA
+        _q = (KOL_QUOTA if tier == "kol"
+              else KOC_QUOTA + max(0, KOL_QUOTA - _tier_done["kol"]))
         if _tier_done[tier] >= _q:
             _over_quota += 1
             continue                           # 超配额：不写、不标 seen → 下一轮还会遇到
