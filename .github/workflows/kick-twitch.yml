@@ -98,25 +98,8 @@ jobs:
       #     是为了让「查过、确实提不到」的老行**尽快过期**，免得长期占着候选池每轮白扫。
       #     代价：Actions 若连续停摆 >1 天会漏 —— 由本机 fill-contacts.py（有 tried 记账、
       #     不限天数）兜底。
-      - name: 联系方式补全一轮（发现表 *-cloud / streamscharts 空行）
-        if: always()
-        env:
-          GSPREAD_SA: .secrets/sa.json
-          DISCOVER_SHEET_ID: ${{ secrets.DISCOVER_SHEET_ID }}
-          TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
-          TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
-        run: |
-          # 2026-10-21(用户: 快速消化每轮发现的网红, KOC 慢慢来):
-          #   仓库已迁 public → Actions 不再计费，去掉「每 3 小时才跑」的节流。
-          #   ① 浅层（Twitch /helix/users 批量 API，秒级）**每轮都跑** → 新发现的行 ≤30 分钟就能补上联系方式。
-          #   ② 深度抓取（X / YouTube / link-in-bio，25s/行）仍**每 3 小时**一次，避免反爬与拉长每轮耗时。
-          #   排序已在脚本内改成「KOL 两表优先，KOC 后置」。
-          python3 automation/fill_contacts_cloud.py --apply --limit 800 --days 1
-          # 2026-10-21(用户: 提速): 深度抓取改**每轮**跑，一次 40 行（40×25s≈17min，30 分钟一轮放得下）。
-          #   原来每 3 小时 20 行 → 800 行积压要 10 小时，现在 ~2.5 小时清完。
-          python3 automation/fill_contacts_cloud.py --apply --limit 800 --days 1 \
-            --deep --deep-limit 20
-
+      # 2026-10-21: 补联系方式已拆到独立 workflow `fill-contacts.yml`（Claude/DeepSeek 一致建议）——
+      #   深度抓取 20 行 × 25s 不再拖住发现循环。这里只留发现 + 打分。
       - name: 候选优先级判定（Kick + Twitch）
         # 2026-10-20: 用户要求「电脑关了也要能操作」——把本机版 discover_priority 搬到云上。
         # 数据源改成直接读 4 张发现表（15MB 候选池进不了 Secret）。
