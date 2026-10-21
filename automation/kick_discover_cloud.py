@@ -149,13 +149,18 @@ def _req(url, headers=None, timeout=20, data=None, cffi=True):
     #   降速/换版本都救不了（不是限速，是 IP 信誉）。唯一验证过的出口是
     #   我们的 Cloudflare Worker 反代（/proxy?url=），实测同样 URL 200。
     #   所以 kick.com/api/* 与 web.kick.com 一律**优先走代理**；没配 WORKER 时直连（本机开发不受影响）。
-    if WORKER and ("kick.com/api/" in url or "web.kick.com" in url):
-        url = "%s/proxy?url=%s" % (WORKER.rstrip("/"), urllib.parse.quote(url, safe=""))
+    _via_proxy = bool(WORKER and ("kick.com/api/" in url or "web.kick.com" in url))
+    if _via_proxy:
+        # 走我们自己的 /kickproxy（**不带客户端 IP 头**，出口就是 Cloudflare）。
+        # 旧代理 holy-cell-3965 会透传来源 IP → Actions 的 IP 照样被 Kick 封，等于没代理。
+        url = "%s/kickproxy?url=%s" % (WORKER.rstrip("/"), urllib.parse.quote(url, safe=""))
     if "kick.com" in url:
         _throttle()
     h = dict(UA)
     if headers:
         h.update(headers)
+    if _via_proxy and D1_TOK:
+        h["Authorization"] = "Bearer " + D1_TOK
     if data is None and cffi:
         try:
             from curl_cffi import requests as _c
