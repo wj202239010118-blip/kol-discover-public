@@ -489,6 +489,54 @@ def load_seen(sh):
     return seen, slugs, names
 
 
+# ── 2026-10-21: D1 状态层（与 twitch 腿同构）。未配置时静默回落读表。──
+D1_API = (os.environ.get("DISCOVER_API") or "").rstrip("/")
+D1_TOK = os.environ.get("DISCOVER_TOKEN") or ""
+
+
+def _d1(path, payload=None, method="POST"):
+    if not D1_API or not D1_TOK:
+        return None
+    try:
+        data = json.dumps(payload).encode() if payload is not None else None
+        req = urllib.request.Request(D1_API + path, data=data, method=method,
+            headers={"Authorization": "Bearer " + D1_TOK,
+                     "Content-Type": "application/json", "User-Agent": "kick-discover/1.0"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode())
+    except Exception as e:
+        print("  [warn] D1 %s 失败: %s" % (path, str(e)[:70]), file=sys.stderr)
+        return None
+
+
+def d1_known_slugs(slugs):
+    """批量查 D1 已知 slug。D1 不可用 → None（回落读表）。"""
+    if not D1_API or not D1_TOK:
+        return None
+    out = set()
+    for i in range(0, len(slugs), 1000):
+        r = _d1("/discover/check_slug", {"platform": "kick", "slugs": slugs[i:i + 1000]})
+        if r is None:
+            return None
+        for it in (r.get("known") or []):
+            if it.get("slug"):
+                out.add(str(it["slug"]).lower())
+    return out
+
+
+def d1_known_uids(uids):
+    if not D1_API or not D1_TOK:
+        return None
+    out = set()
+    for i in range(0, len(uids), 1000):
+        r = _d1("/discover/check", {"platform": "kick", "uids": uids[i:i + 1000]})
+        if r is None:
+            return None
+        for it in (r.get("known") or []):
+            out.add(str(it.get("uid")))
+    return out
+
+
 def main():
     if not SHEET_ID:
         print("缺 DISCOVER_SHEET_ID", file=sys.stderr)
@@ -536,7 +584,17 @@ def main():
     else:
         p = os.environ.get("GSPREAD_SA") or ""
     sh = gspread.service_account(filename=p).open_by_key(SHEET_ID)
-    seen, slugs_seen, _ = load_seen(sh)
+    # 2026-10-21: slug 去重优先查 D1（不读 4 张表）；uid 去重在拉到详情后批量查。
+    _all_slugs = [str(sl) for k in ("casino", "noncasino") for sl, _m in buckets[k]]
+    _t_dedup = time.time()
+    _d1sl = d1_known_slugs(_all_slugs) if _all_slugs else None
+    if _d1sl is not None:
+        slugs_seen = set(_d1sl)
+        seen = set()
+        print("[去重] D1 slug 命中 %d / 候选 %d（%.1fs，未读表）"
+              % (len(slugs_seen), len(_all_slugs), time.time() - _t_dedup), file=sys.stderr)
+    else:
+        seen, slugs_seen, _ = load_seen(sh)
 
     # 目标表表头（动态：钓KOC 是 24 列且第3列叫「用户名」）
     hdrs = {}
@@ -546,6 +604,7 @@ def main():
 
     # ── 阶段 1：串行筛候选 + 拉详情（去重需 uid，故在此完成） ────────────────
     retry = load_retry()
+    _failed = []
     st = {"slug": 0, "uid": 0, "nodetail": 0, "noname": 0, "pass": 0}
     _CAND_CAP = KOL_QUOTA + KOC_QUOTA + 60     # 缓冲：部分候选会落到另一 tier
     _done = 0                                  # 本轮已处理的候选数
@@ -570,6 +629,8 @@ def main():
                 _r = retry.get(slug) or {}
                 retry[slug] = {"fails": int(_r.get("fails", 0)) + 1,
                                "ts": time.strftime("%Y-%m-%d %H:%M:%S")}
+                _failed.append({"platform": "kick", "slug": slug, "uid": "",
+                                "status": "failed", "last_error": "detail_429_or_miss"})
                 continue
             _u = d.get("user") or {}
             disp = str(_u.get("username") or d.get("slug") or "").strip()
@@ -583,6 +644,17 @@ def main():
             st["pass"] += 1
             _done += 1
             pending.append((kind, slug, meta, d, disp))
+
+    # 2026-10-21: uid 去重（uid 只有拉到详情才知道）→ 批量查 D1，已入库的剔除。
+    if pending and not seen:
+        _p_uids = [str((t[3] or {}).get("id") or (t[3] or {}).get("user_id") or "") for t in pending]
+        _d1u = d1_known_uids([u for u in _p_uids if u])
+        if _d1u is not None:
+            _before = len(pending)
+            pending = [t for t in pending
+                       if str((t[3] or {}).get("id") or (t[3] or {}).get("user_id") or "") not in _d1u]
+            print("[去重] D1 uid 命中 %d，剔除后剩 %d" % (_before - len(pending), len(pending)),
+                  file=sys.stderr)
 
     # ── 阶段 2：并发算 metas（每个候选 1 次聊天采样 + 1 次 LLM 判语种，~17s/个） ──
     # 2026-10-09 提速：原先**串行** → 20 个候选 ~372s（占整条 Kick 腿 6.4min 的绝大部分）。
@@ -635,6 +707,8 @@ def main():
         out_rows.setdefault(nm, {"hdr": hdr, "rows": [], "keys": []})
         out_rows[nm]["rows"].append(row)
         out_rows[nm]["keys"].append((slug, str(d.get("id") or d.get("user_id") or "")))
+        out_rows[nm].setdefault("keys4", []).append(
+            (slug, str(d.get("id") or d.get("user_id") or ""), tier, kind))
 
     print("[去重明细] slug跳过=%d uid跳过=%d 详情失败=%d 无名=%d 通过=%d"
           % (st["slug"], st["uid"], st["nodetail"], st["noname"], st["pass"]), file=sys.stderr)
@@ -665,6 +739,12 @@ def main():
                 retry.pop(_slug, None)
                 if _uid:
                     seen.add("kick:" + _uid)
+            # 2026-10-21: 写表成功 → D1 标 exported（含人群/垂类）
+            _items = [{"platform": "kick", "uid": _uid, "slug": _slug, "status": "exported",
+                       "grp": _tier, "vertical": _kind}
+                      for (_slug, _uid, _tier, _kind) in pack.get("keys4", []) if _uid]
+            if _items:
+                _d1("/discover/done", {"items": _items})
             print("     [写入] %s +%d" % (nm, len(rows)), file=sys.stderr)
     if _over_quota:
         print("     [配额] 超 KOL/KOC 配额未写 %d 个（下一轮继续）" % _over_quota, file=sys.stderr)
@@ -673,6 +753,15 @@ def main():
         for _k, _ in _drop:
             retry.pop(_k, None)
     save_retry(retry)
+    if _failed:
+        _d1("/discover/done", {"items": _failed})
+    _d1("/discover/metrics", {"items": [
+        {"name": "kick.candidates", "value": len(_all_slugs)},
+        {"name": "kick.written", "value": total},
+        {"name": "kick.detail_failed", "value": len(_failed)},
+        {"name": "kick.dedup_ms", "value": int((time.time() - _t_dedup) * 1000)},
+        {"name": "kick.passed", "value": st["pass"]},
+    ]})
     print("[结果] 合计 %d 行%s" % (total, "" if APPLY else "（dry-run 未写）"), file=sys.stderr)
     return 0
 

@@ -59,6 +59,8 @@ jobs:
           KICK_RPS: '3'             # 全局请求速率上限（429 治理）
           GPT_THINK_KEY: ${{ secrets.GPT_THINK_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DISCOVER_API: https://kol-ext-gateway.wj202239010118.workers.dev
+          DISCOVER_TOKEN: ${{ secrets.DISCOVER_TOKEN }}
         run: |
           # casino 类目每轮跑（几十个候选，秒级）；非 casino 每 2 小时一次（几百个候选）。
           H=$(date -u +%H)
@@ -72,6 +74,26 @@ jobs:
         with:
           path: state
           key: discover-state-kick-${{ github.run_id }}
+
+      # 2026-10-21(Claude/GPT 一致建议): 首要告警指标 = 排队里最老一条等了多久。
+      #   不响 = 一切正常；响 = 处理能力跟不上候选产生（比"产出变少"早得多）。
+      - name: 积压告警（oldest pending > 90m）
+        if: always()
+        env:
+          DISCOVER_API: https://kol-ext-gateway.wj202239010118.workers.dev
+          DISCOVER_TOKEN: ${{ secrets.DISCOVER_TOKEN }}
+          LARK_WEBHOOK: ${{ secrets.LARK_WEBHOOK }}
+        run: |
+          set +e
+          ST=$(curl -s -m 20 "$DISCOVER_API/discover/stats" -H "Authorization: Bearer $DISCOVER_TOKEN")
+          OLD=$(printf '%s' "$ST" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('oldest_pending') or '')")
+          TOTAL=$(printf '%s' "$ST" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('total',0))")
+          if [ -z "$OLD" ]; then echo "no pending backlog"; exit 0; fi
+          AGE=$(( $(date -u +%s) - $(date -d "$OLD" +%s) ))
+          echo "oldest_pending=${OLD} age=${AGE}s total=${TOTAL}"
+          if [ "$AGE" -gt 5400 ] && [ -n "$LARK_WEBHOOK" ]; then
+            curl -s -m 15 -X POST "$LARK_WEBHOOK" -H 'Content-Type: application/json'               -d "{\"msg_type\":\"text\",\"content\":{\"text\":\"[discover] backlog alert: oldest pending waiting ${AGE}s, total ${TOTAL}\"}}" >/dev/null
+          fi
 
   twitch:
     runs-on: ubuntu-latest
