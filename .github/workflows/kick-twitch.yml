@@ -57,7 +57,8 @@ jobs:
           KICK_RECONCILE: state/kick_reconcile.txt
           KICK_KOL_QUOTA: '140'
           KICK_KOC_QUOTA: '60'      # KOC 保底；KOL 没用完的额度动态让给 KOC
-          KICK_RPS: '3'             # 全局请求速率上限（429 治理）
+          KICK_RPS: '3'             # 全局请求速率上限
+          KICK_WORKER_URL: ${{ secrets.KICK_WORKER_URL }}   # Cloudflare 反代（Actions IP 被 Kick 整段拉黑，走它出口）
           GPT_THINK_KEY: ${{ secrets.GPT_THINK_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DISCOVER_API: https://kol-ext-gateway.wj202239010118.workers.dev

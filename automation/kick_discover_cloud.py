@@ -144,7 +144,14 @@ def _throttle():
 
 
 def _req(url, headers=None, timeout=20, data=None, cffi=True):
-    if "kick.com" in url or "kick.com" in str(url):
+    # 2026-10-21(实测治本): GitHub Actions 的 IP 段被 Kick WAF **整段拉黑** ——
+    #   同一批 URL：本机住宅 IP 全 200，Actions 全 429（v2 86 次 + v1 38 次）。
+    #   降速/换版本都救不了（不是限速，是 IP 信誉）。唯一验证过的出口是
+    #   我们的 Cloudflare Worker 反代（/proxy?url=），实测同样 URL 200。
+    #   所以 kick.com/api/* 与 web.kick.com 一律**优先走代理**；没配 WORKER 时直连（本机开发不受影响）。
+    if WORKER and ("kick.com/api/" in url or "web.kick.com" in url):
+        url = "%s/proxy?url=%s" % (WORKER.rstrip("/"), urllib.parse.quote(url, safe=""))
+    if "kick.com" in url:
         _throttle()
     h = dict(UA)
     if headers:
@@ -251,9 +258,9 @@ def detail(slug):
         #   （日志实测：v2 429 × 86、v1 429 × 38 —— 级联只是把限流翻倍）。
         #   直接判失败进重试队列，不再降级浪费请求。
         return None
+    # 2026-10-21: v1 兜底保留（走 _req 时同样经代理）；原来那条指向 Worker 的错误路径
+    #   "%s/api/v1/channels/" 从来没可能成功（Worker 只认 /proxy?url=），已删。
     d = _json("%s/channels/%s" % (KICK_V1, urllib.parse.quote(slug)))
-    if not d:
-        d = _json("%s/api/v1/channels/%s" % (WORKER, urllib.parse.quote(slug)))
     return d or {}
 
 
