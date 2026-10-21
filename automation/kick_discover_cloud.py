@@ -246,6 +246,11 @@ def detail(slug):
             pass
     if st in (404, 410):
         return {"_not_found": True}
+    if st == 429:
+        # 2026-10-21(实测): 云端 IP 段被 Kick 限流时，v2 返回 429 后 v1 必然也是 429
+        #   （日志实测：v2 429 × 86、v1 429 × 38 —— 级联只是把限流翻倍）。
+        #   直接判失败进重试队列，不再降级浪费请求。
+        return None
     d = _json("%s/channels/%s" % (KICK_V1, urllib.parse.quote(slug)))
     if not d:
         d = _json("%s/api/v1/channels/%s" % (WORKER, urllib.parse.quote(slug)))
