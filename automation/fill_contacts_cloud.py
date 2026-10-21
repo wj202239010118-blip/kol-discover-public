@@ -114,12 +114,20 @@ def deep_enrich(slug, bio, mods, budget_s=25.0):
     # ② X bio
     xf = mods.get("x_profile_fetch")
     x_handles = (links.get("twitter") or links.get("x") or [])
+    # 2026-10-21: bio 里常常没写 X 链接，但主播的 X handle 多数与 Twitch slug 同名
+    #   （kaicenat / trainwreckstv / xqc 都是）。没有链接时用 slug 猜一次，
+    #   并要求返回的 screen_name 与 slug 完全一致 —— 否则就是抓到同名路人，直接丢弃。
+    if xf and not x_handles and slug:
+        x_handles = [slug]
     if xf and x_handles and (_t.time() - t0) < budget_s:
         try:
-            j = xf.fetch(x_handles[0].lstrip("@"))
-            desc = ((j.get("user") or {}).get("description") or "")
-            if desc:
-                texts.append(desc)
+            _h = str(x_handles[0]).lstrip("@")
+            j = xf.fetch(_h)
+            _u = (j.get("user") or {})
+            if str(_u.get("screen_name") or "").lower() == _h.lower():
+                desc = (_u.get("description") or "")
+                if desc:
+                    texts.append(desc)
         except Exception:
             pass
 
@@ -293,7 +301,7 @@ def main():
     if a.deep and len(results) < len(todo):
         mods = _try_imports()
         got = {r[2] for r in results}
-        miss = [(ts, nm, rn, sl) for ts, nm, rn, sl in todo if sl not in got]
+        miss = [(t[0], t[1], t[2], t[3]) for t in todo if t[3] not in got]
         print("▶ 深度抓取：%d 行待补（X bio / YouTube 描述 / link-in-bio）" % len(miss), file=sys.stderr)
         deep_hits = 0
         for ts, nm, rn, sl in miss[:a.deep_limit]:
