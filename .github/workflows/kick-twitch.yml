@@ -43,7 +43,7 @@ jobs:
           DISCOVER_SHEET_ID: ${{ secrets.DISCOVER_SHEET_ID }}
           KICK_CLIENT_ID: ${{ secrets.KICK_CLIENT_ID }}
           KICK_CLIENT_SECRET: ${{ secrets.KICK_CLIENT_SECRET }}
-          KICK_MAX_NEW: '20'        # 保持 20 —— 实测降到 12 不省时（12 候选 79s vs 20 候选 76s）：Kick 腿耗时由 LLM 单次延迟决定（12→30s 波动），与候选数弱相关；要省配额只能降**频次**，不能降每轮量
+          KICK_MAX_NEW: '60'   # 2026-10-21: 20→60（每轮仅 ~40s，30 分钟一轮有大量余量；去重跳过仍有 500+ 可挖）        # 保持 20 —— 实测降到 12 不省时（12 候选 79s vs 20 候选 76s）：Kick 腿耗时由 LLM 单次延迟决定（12→30s 波动），与候选数弱相关；要省配额只能降**频次**，不能降每轮量
           GPT_THINK_KEY: ${{ secrets.GPT_THINK_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: python3 automation/kick_discover_cloud.py --apply
@@ -56,7 +56,7 @@ jobs:
           TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
           TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
           TWITCH_MAX_NEW: '60'
-          TWITCH_MAX_PAGES: '3'
+          TWITCH_MAX_PAGES: '6'   # 2026-10-21: 3→6（待处理只剩 3 个 = 当前 3 页已挖尽，扩大扫描面）
         run: python3 automation/twitch_discover_cloud.py --apply
 
       # 2026-10-12: 联系方式补全一轮 —— 补「建联腿含 cloud/streamscharts 且联系方式为空」的行。

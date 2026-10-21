@@ -57,7 +57,7 @@ jobs:
           AGENT_CRAWLER_STATE: state/agent_crawler_state.json
           AGENT_CRAWLER_CONFIG: automation/agent_crawler_config.json
           AGENT_CRAWLER_ALERTS: state/alerts.log
-        run: python3 automation/find-agents-crawler.py --depth 2 --max-new 40
+        run: python3 automation/find-agents-crawler.py --depth 2 --max-new 80   # 2026-10-21: 40→80（RSS 腿成本低）
 
       - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         if: always()
