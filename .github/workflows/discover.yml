@@ -17,14 +17,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.11'
       - run: pip install --quiet gspread google-auth
 
       # 跨轮状态（去重用的缓存）——丢了也能从表 seed 重建，所以只是优化
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: state
           key: agc-state-${{ github.run_id }}
@@ -59,7 +59,7 @@ jobs:
           AGENT_CRAWLER_ALERTS: state/alerts.log
         run: python3 automation/find-agents-crawler.py --depth 2 --max-new 40
 
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         if: always()
         with:
           path: state
