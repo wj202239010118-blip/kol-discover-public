@@ -351,8 +351,10 @@ def d1_known(uids):
     if not D1_API or not D1_TOK:
         return None
     out = set()
-    for i in range(0, len(uids), 90):
-        r = _d1("/discover/check", {"platform": "twitch", "uids": uids[i:i + 90]})
+    # 2026-10-21: 一次发 1000 个（Worker 内部再按 D1 参数上限分批）——
+    #   实测 90/批 × 7 次往返要 15.5s；改 1 次往返约 1s。
+    for i in range(0, len(uids), 1000):
+        r = _d1("/discover/check", {"platform": "twitch", "uids": uids[i:i + 1000]})
         if r is None:
             return None
         for it in (r.get("known") or []):
