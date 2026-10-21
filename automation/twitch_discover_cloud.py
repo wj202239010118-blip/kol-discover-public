@@ -270,6 +270,24 @@ def is_kol(followers, country, lang_code):
     return f >= int(KOL_MIN_TWITCH * factor)
 
 
+def _tracker_stats(slug):
+    """TwitchTracker 30 天统计（实测可用，无需登录）。
+
+    返回 minutes_streamed / avg_viewers / max_viewers / hours_watched / followers(30天涨粉) / followers_total。
+    注意：`max_viewers` 是 **30 天峰值**，不是历史峰值；summary 也不给「活跃天数」——这两列宁可不填，不编造。
+    """
+    if os.environ.get("TWITCH_TRACKER", "1") in ("0", "", "false", "False"):
+        return {}
+    try:
+        from curl_cffi import requests as cr
+        r = cr.get("https://twitchtracker.com/api/channels/summary/" + urllib.parse.quote(slug),
+                   impersonate="chrome124", timeout=15,
+                   headers={"Accept": "application/json"})
+        return (r.json() or {}) if (r.status_code == 200 and r.text) else {}
+    except Exception:
+        return {}
+
+
 def metas(m, ch, desc=""):
     """把「列名 → 值」一次算齐（写表时按各表真实表头取用）。
 
@@ -283,6 +301,7 @@ def metas(m, ch, desc=""):
     country = ""          # Twitch 不提供国家；官方语言字段只给语种 → 国家留空（不编造）
     why = "Twitch 无国家字段；语种取自 broadcaster_language"
     _bio = str(desc or "")
+    _trk = _tracker_stats(login) if login else {}
     mails, tgs, was = RE_EMAIL.findall(_bio), RE_TG.findall(_bio), RE_WA.findall(_bio)
     # 格式与表里历史样本（discover-runner 写的 `邮箱: mailto:x@y`）保持一致 —— 同列别有两种写法。
     contact = ("邮箱: mailto:%s" % mails[0]) if mails else ""
@@ -309,8 +328,16 @@ def metas(m, ch, desc=""):
         "分类": category_slug(m), "语种": lang_cn(lang_code),
         "观众数": str(m.get("viewers") or ""), "粉丝数": str(followers or ""),
         "主页链接": "https://twitch.tv/%s" % login,
+        "Kick主页": "", "Twitch主页": "https://twitch.tv/%s" % login,
         "国家": country, "状态": "待确认",
         "联系方式": contact, "其他社交账号": others, "国家判断理由": why,
+        "30天累计观看时长": (("%d" % _trk["hours_watched"]) if _trk.get("hours_watched") is not None else ""),
+        "30天峰值观众": (str(_trk["max_viewers"]) if _trk.get("max_viewers") is not None else ""),
+        "30天平均观众": (str(_trk["avg_viewers"]) if _trk.get("avg_viewers") is not None else ""),
+        "30天涨粉": (str(_trk["followers"]) if _trk.get("followers") is not None else ""),
+        "活跃天数": "",           # TwitchTracker summary 不提供 → 留空（不编造）
+        "历史峰值观众": "",       # summary 的 max_viewers 是 30 天口径 → 留空
+        "简介": _bio,
         "IG": ((_links.get("instagram") or [""])[0]),
         "X": ((_links.get("twitter") or [""])[0]),
         "TikTok": ((_links.get("tiktok") or [""])[0]),

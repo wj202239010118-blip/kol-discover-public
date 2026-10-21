@@ -511,6 +511,7 @@ def metas(slug, disp, bio, d, cat_name, viewers, chat=True):
         "用户名/Slug": slug, "用户名": slug, "平台UID": uid,
         "分类": cat_name or "", "语种": lang, "观众数": str(viewers or ""),
         "粉丝数": str(followers or ""), "主页链接": "https://kick.com/%s" % slug,
+        "Kick主页": "https://kick.com/%s" % slug, "Twitch主页": "",
         "国家": country, "状态": "待确认",
         "联系方式": _contact,
         "其他社交账号": " / ".join(others), "国家判断理由": why,
