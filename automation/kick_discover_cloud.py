@@ -467,6 +467,40 @@ def is_kol(followers, country, lang):
     return f >= int(KOL_MIN_KICK * factor)
 
 
+def vod_stats(slug, days=30):
+    """Kick 往期视频（VOD）列表 → 30 天内的活跃天数 + 直播总时长（小时）。
+
+    2026-10-21 实测 `kick.com/api/v2/channels/<slug>/videos`（网页接口，非官方 Public API）：
+      · 每场有 duration(毫秒) / created_at / views(播放数) / viewer_count
+      · **viewer_count 只是某一刻的实时快照**（在播场次 ≈ /livestreams 的当前观众；已结束场次是残值），
+        所以**不能**拿它当场均/峰值 → 「30天峰值/平均观众、累计观看时长」这几列仍然算不出来。
+      · 固定返回最多 26 条，不支持 limit/page/cursor 翻页 → 覆盖约 30 天（高频主播可能不够）。
+    返回 (活跃天数, 直播小时数)，拿不到返回 ("", "")。
+    """
+    try:
+        from curl_cffi import requests as cr
+        from datetime import datetime, timedelta, timezone as _tz
+        r = cr.get("https://kick.com/api/v2/channels/%s/videos" % str(slug),
+                   impersonate="chrome124", timeout=15,
+                   headers={"Accept": "application/json", "accept-language": "en-US,en;q=0.9"})
+        if r.status_code != 200:
+            return "", ""
+        vids = r.json() or []
+        cut = (datetime.now(_tz.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+        dates, hours = set(), 0.0
+        for v in vids:
+            ct = str(v.get("created_at") or "")[:10]
+            if len(ct) == 10 and ct >= cut:
+                dates.add(ct)
+                try:
+                    hours += float(v.get("duration") or 0) / 3600000.0   # duration 单位 = 毫秒
+                except Exception:
+                    pass
+        return (str(len(dates)) if dates else ""), (("%.1f" % hours) if hours else "")
+    except Exception:
+        return "", ""
+
+
 def metas(slug, disp, bio, d, cat_name, viewers, chat=True):
     """把「列名 → 值」一次算齐（写表时按各表真实表头取用）。
 
@@ -489,6 +523,7 @@ def metas(slug, disp, bio, d, cat_name, viewers, chat=True):
     lang = lang_from_text("%s %s %s" % (slug or "", disp or "", bio or ""))
     if not lang:
         lang = guess_lang(slug, disp, bio, chat_sample(slug, pages=1) if chat else [])
+    _vd, _vh = vod_stats(slug)          # 2026-10-21: VOD 列表 → 30 天活跃天数 / 开播时长
     mails, tg, wa = RE_EMAIL.findall(bio), RE_TG.findall(bio), RE_WA.findall(bio)
     others = (["TG:" + t for t in tg[:2]] + ["WA:" + w for w in wa[:2]])
     # 2026-10-21(用户): "不要非得 X 链接 —— IG/X/TikTok/YouTube/Facebook 都是能找到人的路径"。
@@ -513,6 +548,8 @@ def metas(slug, disp, bio, d, cat_name, viewers, chat=True):
         "粉丝数": str(followers or ""), "主页链接": "https://kick.com/%s" % slug,
         "Kick主页": "https://kick.com/%s" % slug, "Twitch主页": "",
         "简介": bio,                      # 2026-10-21: 表里有「简介」列，之前 Kick 腿没填
+        "活跃天数": _vd,                  # VOD 日期去重（30 天窗口，可靠）
+        # 30天累计观看时长/峰值/平均：Kick 的 VOD.viewer_count 只是瞬时快照，算不出 → 留空不编造
         "国家": country, "状态": "待确认",
         "联系方式": _contact,
         "其他社交账号": " / ".join(others), "国家判断理由": why,
