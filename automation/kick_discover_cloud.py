@@ -492,6 +492,28 @@ def load_seen(sh):
 # ── 2026-10-21: D1 状态层（与 twitch 腿同构）。未配置时静默回落读表。──
 D1_API = (os.environ.get("DISCOVER_API") or "").rstrip("/")
 D1_TOK = os.environ.get("DISCOVER_TOKEN") or ""
+# D1 写失败（免费层日额度用尽等）时的本地兜底：存「已写表但没记进 D1」的 slug，
+# 下一轮去重并进来，避免重复写表。
+RECONCILE_P = os.environ.get("KICK_RECONCILE") or os.path.join(
+    os.environ.get("RUNNER_TEMP") or "/tmp", "kick_reconcile.txt")
+
+
+def load_recon():
+    try:
+        with open(RECONCILE_P, encoding="utf-8") as f:
+            return {ln.strip().lower() for ln in f if ln.strip()}
+    except Exception:
+        return set()
+
+
+def save_recon(ids):
+    try:
+        with open(RECONCILE_P, "w", encoding="utf-8") as f:
+            for x in sorted(ids):
+                f.write(x + "\n")
+    except Exception:
+        pass
+
 
 
 def _d1(path, payload=None, method="POST"):
@@ -590,6 +612,10 @@ def main():
     _d1sl = d1_known_slugs(_all_slugs) if _all_slugs else None
     if _d1sl is not None:
         slugs_seen = set(_d1sl)
+        _recon = load_recon()
+        slugs_seen |= _recon
+        if _recon:
+            print("[去重] 本地兜底 %d 条（D1 写失败遗留）" % len(_recon), file=sys.stderr)
         seen = set()
         print("[去重] D1 slug 命中 %d / 候选 %d（%.1fs，未读表）"
               % (len(slugs_seen), len(_all_slugs), time.time() - _t_dedup), file=sys.stderr)
@@ -687,6 +713,7 @@ def main():
 
     # ── 阶段 3：串行组行（按各表真实表头取用）+ KOL/KOC 配额 ───────────────
     _tier_done = {"kol": 0, "koc": 0}
+    _recon_fail = []
     _over_quota = 0
     # 2026-10-21: 按粉丝数降序处理 —— 粉丝多的更可能是 KOL，先把 KOL 配额填满；
     #   剩下的额度（KOL 没填满的部分）动态让给 KOC，避免「KOL 名额空着、KOC 反而被卡」。
@@ -744,7 +771,8 @@ def main():
                        "grp": _tier, "vertical": _kind}
                       for (_slug, _uid, _tier, _kind) in pack.get("keys4", []) if _uid]
             if _items:
-                _d1("/discover/done", {"items": _items})
+                if _d1("/discover/done", {"items": _items}) is None:
+                    _recon_fail.extend([_slug for (_slug, _u, _t, _k) in pack.get("keys4", []) if _slug])
             print("     [写入] %s +%d" % (nm, len(rows)), file=sys.stderr)
     if _over_quota:
         print("     [配额] 超 KOL/KOC 配额未写 %d 个（下一轮继续）" % _over_quota, file=sys.stderr)
@@ -755,6 +783,10 @@ def main():
     save_retry(retry)
     if _failed:
         _d1("/discover/done", {"items": _failed})
+    if _recon_fail:
+        save_recon(set(locals().get("_recon", set())) | set(_recon_fail))
+        print("     [warn] D1 写失败 %d 条 → 本地兜底记账（下轮仍能去重）" % len(_recon_fail),
+              file=sys.stderr)
     _d1("/discover/metrics", {"items": [
         {"name": "kick.candidates", "value": len(_all_slugs)},
         {"name": "kick.written", "value": total},

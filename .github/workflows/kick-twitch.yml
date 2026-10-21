@@ -54,6 +54,7 @@ jobs:
           KICK_MAX_NEW: '200'
           KICK_MAX_PAGES: '14'      # 全站在播 ~12,135 = 13 页（1000/页），14 页留余量
           KICK_RETRY_STATE: state/kick_retry.json
+          KICK_RECONCILE: state/kick_reconcile.txt
           KICK_KOL_QUOTA: '140'
           KICK_KOC_QUOTA: '60'      # KOC 保底；KOL 没用完的额度动态让给 KOC
           KICK_RPS: '3'             # 全局请求速率上限（429 治理）
@@ -131,6 +132,7 @@ jobs:
           TWITCH_MAX_NEW: '200'
           TWITCH_MAX_PAGES: '40'    # Just Chatting 3,851 在播 = 39 页（100/页）→ 每个类目读到底
           TWITCH_RETRY_STATE: state/twitch_retry.json
+          TWITCH_RECONCILE: state/twitch_reconcile.txt
           TWITCH_KOL_QUOTA: '140'
           TWITCH_KOC_QUOTA: '100'
           DISCOVER_API: https://kol-ext-gateway.wj202239010118.workers.dev
