@@ -42,6 +42,29 @@ APPLY = ("--apply" in sys.argv) or (os.environ.get("KICK_APPLY") == "1")
 # 限流：每轮最多处理多少个"新候选"。详情+聊天+LLM 每人都要几秒，
 # 不限流会在 30 分钟周期内跑不完（实测 300+ 候选 >12 分钟）。
 MAX_NEW = int(os.environ.get("KICK_MAX_NEW", "20"))
+# 2026-10-21(消化效率): KOL/KOC 配额分开 —— KOL 先消化，KOC 保底但不挤占 KOL。
+KOL_QUOTA = int(os.environ.get("KICK_KOL_QUOTA", "140"))
+KOC_QUOTA = int(os.environ.get("KICK_KOC_QUOTA", "60"))
+# 详情抓取失败（限流/超时）的 slug 记在这里，下一轮**优先重试**，而不是直接丢弃。
+RETRY_P = os.environ.get("KICK_RETRY_STATE") or os.path.join(
+    os.environ.get("RUNNER_TEMP") or "/tmp", "kick_retry.json")
+
+
+def load_retry():
+    try:
+        with open(RETRY_P, encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def save_retry(d):
+    try:
+        with open(RETRY_P, "w", encoding="utf-8") as f:
+            json.dump(d, f)
+    except Exception:
+        pass
+
 
 CASINO_CATS = {"28"}
 NONCASINO_CATS = {"15", "75", "509", "242", "8549"}   # Just Chatting/Sports/Sports Betting/Games+Demos/IRL
@@ -424,14 +447,18 @@ def load_seen(sh):
     for nm in names:
         try:
             ws = sh.worksheet(nm)
-            for v in ws.col_values(5)[1:]:
+            # 2026-10-21(提速): 原来每表 3 次 col_values(2/4/5) = 12 次 API；
+            #   改成 1 次 batchGet（B/D/E 三列）→ 4 次 API。去重口径完全不变。
+            plat_c, slug_c, uid_c = ws.batch_get(["B:B", "D:D", "E:E"])
+            for row in uid_c[1:]:
+                v = row[0] if row else ""
                 if str(v).strip():
                     seen.add("kick:" + str(v).strip())
-            plat = ws.col_values(2)
-            slug = ws.col_values(4)
-            for i in range(1, min(len(plat), len(slug))):
-                if "kick" in str(plat[i]).lower() and str(slug[i]).strip():
-                    slugs.add(str(slug[i]).strip().lower())
+            for i in range(1, min(len(plat_c), len(slug_c))):
+                pv = plat_c[i][0] if plat_c[i] else ""
+                sv = slug_c[i][0] if slug_c[i] else ""
+                if "kick" in str(pv).lower() and str(sv).strip():
+                    slugs.add(str(sv).strip().lower())
         except Exception as e:
             print("  [warn] 读 %s 索引失败: %s" % (nm, str(e)[:70]), file=sys.stderr)
     print("[去重] 已登记 Kick UID %d / Kick slug %d" % (len(seen), len(slugs)), file=sys.stderr)
@@ -486,14 +513,21 @@ def main():
             hdrs[(kind, tier)] = (nm, sh.worksheet(nm).row_values(1))
 
     # ── 阶段 1：串行筛候选 + 拉详情（去重需 uid，故在此完成） ────────────────
+    retry = load_retry()
     st = {"slug": 0, "uid": 0, "nodetail": 0, "noname": 0, "pass": 0}
-    _done = 0                                  # 本轮已处理的新候选数（限流用）
+    _CAND_CAP = KOL_QUOTA + KOC_QUOTA + 60     # 缓冲：部分候选会落到另一 tier
+    _done = 0                                  # 本轮已处理的候选数
     pending = []                               # [(kind, slug, meta, d, disp)]
     for kind in ("casino", "noncasino"):
-        if _done >= MAX_NEW:
+        # 2026-10-21: 上一轮详情失败的 slug **优先**（失败次数多的更靠前），其余按观众数降序。
+        items = sorted(buckets[kind],
+                       key=lambda x: (0 if x[0] in retry else 1,
+                                      -int((retry.get(x[0]) or {}).get("fails", 0)),
+                                      -int(x[1].get("viewers") or 0)))
+        if _done >= _CAND_CAP:
             break
-        for slug, meta in buckets[kind]:
-            if _done >= MAX_NEW:
+        for slug, meta in items:
+            if _done >= _CAND_CAP:
                 break
             if slug in slugs_seen:
                 st["slug"] += 1
@@ -501,6 +535,9 @@ def main():
             d = detail(slug)
             if not d:
                 st["nodetail"] += 1
+                _r = retry.get(slug) or {}
+                retry[slug] = {"fails": int(_r.get("fails", 0)) + 1,
+                               "ts": time.strftime("%Y-%m-%d %H:%M:%S")}
                 continue
             _u = d.get("user") or {}
             disp = str(_u.get("username") or d.get("slug") or "").strip()
@@ -513,9 +550,6 @@ def main():
                 continue
             st["pass"] += 1
             _done += 1
-            slugs_seen.add(slug)
-            if uid:
-                seen.add("kick:" + uid)
             pending.append((kind, slug, meta, d, disp))
 
     # ── 阶段 2：并发算 metas（每个候选 1 次聊天采样 + 1 次 LLM 判语种，~17s/个） ──
@@ -547,15 +581,23 @@ def main():
         with _cf.ThreadPoolExecutor(max_workers=_W) as _ex:
             done_pairs = list(_ex.map(_mk, pending))
 
-    # ── 阶段 3：串行组行（按各表真实表头取用） ───────────────────────────────
+    # ── 阶段 3：串行组行（按各表真实表头取用）+ KOL/KOC 配额 ───────────────
+    _tier_done = {"kol": 0, "koc": 0}
+    _over_quota = 0
     for (kind, slug, meta, d, disp), mm in done_pairs:
         if not mm:
             continue
         tier = "kol" if is_kol(mm["_followers"], mm["国家"], mm["语种"]) else "koc"
+        _q = KOL_QUOTA if tier == "kol" else KOC_QUOTA
+        if _tier_done[tier] >= _q:
+            _over_quota += 1
+            continue                           # 超配额：不写、不标 seen → 下一轮还会遇到
+        _tier_done[tier] += 1
         nm, hdr = hdrs[(kind, tier)]
         row = [str(mm.get(c, "")) for c in hdr]
-        out_rows.setdefault(nm, {"hdr": hdr, "rows": []})
+        out_rows.setdefault(nm, {"hdr": hdr, "rows": [], "keys": []})
         out_rows[nm]["rows"].append(row)
+        out_rows[nm]["keys"].append((slug, str(d.get("id") or d.get("user_id") or "")))
 
     print("[去重明细] slug跳过=%d uid跳过=%d 详情失败=%d 无名=%d 通过=%d"
           % (st["slug"], st["uid"], st["nodetail"], st["noname"], st["pass"]), file=sys.stderr)
@@ -581,7 +623,19 @@ def main():
                     print("     [warn] %s 配额 429，%ds 后重试(%d/9)" % (nm, _w, _try + 1), file=sys.stderr)
                     time.sleep(_w)
 
+            for _slug, _uid in pack.get("keys", []):
+                slugs_seen.add(_slug)
+                retry.pop(_slug, None)
+                if _uid:
+                    seen.add("kick:" + _uid)
             print("     [写入] %s +%d" % (nm, len(rows)), file=sys.stderr)
+    if _over_quota:
+        print("     [配额] 超 KOL/KOC 配额未写 %d 个（下一轮继续）" % _over_quota, file=sys.stderr)
+    if len(retry) > 500:                       # 防止状态文件无限膨胀
+        _drop = sorted(retry.items(), key=lambda x: -int((x[1] or {}).get("fails", 0)))[500:]
+        for _k, _ in _drop:
+            retry.pop(_k, None)
+    save_retry(retry)
     print("[结果] 合计 %d 行%s" % (total, "" if APPLY else "（dry-run 未写）"), file=sys.stderr)
     return 0
 

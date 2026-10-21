@@ -41,6 +41,28 @@ APPLY = ("--apply" in sys.argv) or (os.environ.get("TWITCH_APPLY") == "1")
 # 限流：每轮最多处理多少个"新候选"（详情+写表都要时间，且 30 分钟周期内必须跑完）
 MAX_NEW = int(os.environ.get("TWITCH_MAX_NEW", "60"))
 MAX_PAGES = int(os.environ.get("TWITCH_MAX_PAGES", "3"))    # 每个类目最多翻几页（100/页）
+# 2026-10-21(消化效率): KOL/KOC 配额分开 + 详情失败重试（同 kick 腿的口径）。
+KOL_QUOTA = int(os.environ.get("TWITCH_KOL_QUOTA", "140"))
+KOC_QUOTA = int(os.environ.get("TWITCH_KOC_QUOTA", "60"))
+RETRY_P = os.environ.get("TWITCH_RETRY_STATE") or os.path.join(
+    os.environ.get("RUNNER_TEMP") or "/tmp", "twitch_retry.json")
+
+
+def load_retry():
+    try:
+        with open(RETRY_P, encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def save_retry(d):
+    try:
+        with open(RETRY_P, "w", encoding="utf-8") as f:
+            json.dump(d, f)
+    except Exception:
+        pass
+
 BATCH_CH = 100                                              # helix/channels 批量上限
 BATCH_USER = 100                                            # helix/users 批量上限（一次可带 100 个 login）
 
@@ -287,13 +309,17 @@ def load_seen(sh):
     for nm in names:
         try:
             ws = sh.worksheet(nm)
-            for v in ws.col_values(5)[1:]:
+            # 2026-10-21(提速): 3 次 col_values → 1 次 batchGet（B/D/E），口径不变。
+            plat_c, slug_c, uid_c = ws.batch_get(["B:B", "D:D", "E:E"])
+            for row in uid_c[1:]:
+                v = row[0] if row else ""
                 if str(v).strip():
                     seen.add("twitch:" + str(v).strip())
-            plat, slug = ws.col_values(2), ws.col_values(4)
-            for i in range(1, min(len(plat), len(slug))):
-                if "twitch" in str(plat[i]).lower() and str(slug[i]).strip():
-                    slugs.add(str(slug[i]).strip().lower())
+            for i in range(1, min(len(plat_c), len(slug_c))):
+                pv = plat_c[i][0] if plat_c[i] else ""
+                sv = slug_c[i][0] if slug_c[i] else ""
+                if "twitch" in str(pv).lower() and str(sv).strip():
+                    slugs.add(str(sv).strip().lower())
         except Exception as e:
             print("  [warn] 读 %s 索引失败: %s" % (nm, str(e)[:70]), file=sys.stderr)
     print("[去重] 已登记 Twitch UID %d / Twitch slug %d" % (len(seen), len(slugs)), file=sys.stderr)
@@ -339,11 +365,18 @@ def main():
             hdrs[(kind, tier)] = (nm, sh.worksheet(nm).row_values(1))
 
     # ② 先挑"新候选"（未登记），再批量补粉丝数（比逐个省配额）
+    retry = load_retry()
+    _CAND_CAP = KOL_QUOTA + KOC_QUOTA + 60
     todo = []
     st = {"slug": 0, "uid": 0}
     for kind in ("casino", "noncasino"):
-        for uid, m in buckets[kind].items():
-            if len(todo) >= MAX_NEW:
+        # 2026-10-21: 上一轮详情失败的 login **优先**，其余按观众数降序
+        items = sorted(buckets[kind].items(),
+                       key=lambda kv: (0 if (kv[1].get("login") or "") in retry else 1,
+                                       -int((retry.get(kv[1].get("login") or "") or {}).get("fails", 0)),
+                                       -int(kv[1].get("viewers") or 0)))
+        for uid, m in items:
+            if len(todo) >= _CAND_CAP:
                 break
             if ("twitch:" + uid) in seen:
                 st["uid"] += 1
@@ -358,6 +391,11 @@ def main():
         return 0
     info = channels_info([m["uid"] for _, m in todo])
     print("[详情] helix/channels 命中 %d/%d" % (len(info), len(todo)), file=sys.stderr)
+    for _kind, _m in todo:
+        if _m["uid"] not in info and _m.get("login"):
+            _r = retry.get(_m["login"]) or {}
+            retry[_m["login"]] = {"fails": int(_r.get("fails", 0)) + 1,
+                                  "ts": time.strftime("%Y-%m-%d %H:%M:%S")}
     # 2026-10-12: 批量取用户简介（联系方式提取的唯一来源）—— 一次 100 个 login，纯 API。
     descs = users_desc([m.get("login") for _, m in todo])
     print("[简介] helix/users 命中 %d/%d" % (
@@ -366,18 +404,23 @@ def main():
 
     # ③ 分层 + 按真实表头填行
     out_rows, n_kol, n_koc = {}, 0, 0
+    _tier_done = {"kol": 0, "koc": 0}
+    _over_quota = 0
     for kind, m in todo:
         mm = metas(m, info.get(m["uid"]), descs.get(str(m.get("login") or "").lower(), ""))
         tier = "kol" if is_kol(mm["_followers"], mm["国家"], mm["_lang_code"]) else "koc"
+        _q = KOL_QUOTA if tier == "kol" else KOC_QUOTA
+        if _tier_done[tier] >= _q:
+            _over_quota += 1
+            continue                             # 超配额：不写、不标 seen → 下一轮还会遇到
+        _tier_done[tier] += 1
         n_kol += (tier == "kol")
         n_koc += (tier == "koc")
         nm, hdr = hdrs[(kind, tier)]
         row = [str(mm.get(c, "")) for c in hdr]      # ← 按真实表头取列，绝不共用一套行
-        out_rows.setdefault(nm, {"hdr": hdr, "rows": []})
+        out_rows.setdefault(nm, {"hdr": hdr, "rows": [], "keys": []})
         out_rows[nm]["rows"].append(row)
-        seen.add("twitch:" + m["uid"])
-        if m.get("login"):
-            slugs_seen.add(m["login"])
+        out_rows[nm]["keys"].append((m.get("login") or "", m["uid"]))
 
     total = 0
     for nm, pack in out_rows.items():
@@ -402,7 +445,19 @@ def main():
                     print("     [warn] %s 配额 429，%ds 后重试(%d/9)" % (nm, _w, _try + 1), file=sys.stderr)
                     time.sleep(_w)
             if _ok:
+                for _login, _uid in pack.get("keys", []):
+                    if _login:
+                        slugs_seen.add(_login)
+                        retry.pop(_login, None)
+                    if _uid:
+                        seen.add("twitch:" + _uid)
                 print("     [写入] %s +%d" % (nm, len(rows)), file=sys.stderr)
+    if _over_quota:
+        print("     [配额] 超 KOL/KOC 配额未写 %d 个（下一轮继续）" % _over_quota, file=sys.stderr)
+    if len(retry) > 500:
+        for _k, _ in sorted(retry.items(), key=lambda x: -int((x[1] or {}).get("fails", 0)))[500:]:
+            retry.pop(_k, None)
+    save_retry(retry)
     print("[结果] KOL=%d KOC=%d 合计 %d 行%s" % (n_kol, n_koc, total, "" if APPLY else "（dry-run 未写）"),
           file=sys.stderr)
     return 0
