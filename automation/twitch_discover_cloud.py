@@ -340,6 +340,12 @@ def main():
         if live:
             print("[%s] %s: 在播 %d" % (kind, gid, len(live)), file=sys.stderr)
         buckets[kind].update(live)
+    _scope = (os.environ.get("TWITCH_SCOPE") or "all").strip().lower()
+    if _scope == "casino":
+        buckets["noncasino"] = {}
+    elif _scope == "noncasino":
+        buckets["casino"] = {}
+    print("[范围] TWITCH_SCOPE=%s" % _scope, file=sys.stderr)
     print("[分流] casino 在播 %d / 非casino 在播 %d（类目 %d 个）"
           % (len(buckets["casino"]), len(buckets["noncasino"]), len(ids)), file=sys.stderr)
     if not (buckets["casino"] or buckets["noncasino"]):

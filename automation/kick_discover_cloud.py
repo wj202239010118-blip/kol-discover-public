@@ -510,6 +510,14 @@ def main():
             _nm = "%s(id=%s)" % (m.get("cat_name") or m.get("category_name") or m.get("category") or "?", cid)
             buckets.setdefault("skip_names", {})
             buckets["skip_names"][_nm] = buckets["skip_names"].get(_nm, 0) + 1
+    # 2026-10-21(提速): 分类目分频 —— 每轮只跑 casino（主力），非 casino 每 2 小时跑一次。
+    #   casino 类目在播只有几十个 → 秒级；非 casino 四百多个 → 几分钟。
+    _scope = (os.environ.get("KICK_SCOPE") or "all").strip().lower()
+    if _scope == "casino":
+        buckets["noncasino"] = []
+    elif _scope == "noncasino":
+        buckets["casino"] = []
+    print("[范围] KICK_SCOPE=%s" % _scope, file=sys.stderr)
     print("[分流] casino=%d 非casino=%d 其它类目不收=%d"
           % (len(buckets["casino"]), len(buckets["noncasino"]), buckets["skip"]), file=sys.stderr)
     if buckets.get("skip_names"):

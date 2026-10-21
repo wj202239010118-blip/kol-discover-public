@@ -63,7 +63,12 @@ jobs:
           KICK_RPS: '3'             # 全局请求速率（429 治理，实测无节流时 29% 失败）
           GPT_THINK_KEY: ${{ secrets.GPT_THINK_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-        run: python3 automation/kick_discover_cloud.py --apply
+        run: |
+          # 2026-10-21(提速): 每轮只跑 casino 类目（几十个候选，秒级）；非 casino 每 2 小时一次。
+          H=$(date -u +%H)
+          if [ $((10#$H % 2)) -eq 0 ]; then export KICK_SCOPE=all; else export KICK_SCOPE=casino; fi
+          echo "KICK_SCOPE=$KICK_SCOPE（UTC ${H} 点）"
+          python3 automation/kick_discover_cloud.py --apply
 
       - name: Twitch 一轮（非casino 两表）
         if: always()
@@ -77,7 +82,11 @@ jobs:
           TWITCH_RETRY_STATE: state/twitch_retry.json
           TWITCH_KOL_QUOTA: '140'
           TWITCH_KOC_QUOTA: '100'   # 2026-10-21: 实测每轮有 96 个待处理、只写 60 → 提到 100
-        run: python3 automation/twitch_discover_cloud.py --apply
+        run: |
+          H=$(date -u +%H)
+          if [ $((10#$H % 2)) -eq 0 ]; then export TWITCH_SCOPE=all; else export TWITCH_SCOPE=casino; fi
+          echo "TWITCH_SCOPE=$TWITCH_SCOPE（UTC ${H} 点）"
+          python3 automation/twitch_discover_cloud.py --apply
 
       # 2026-10-12: 联系方式补全一轮 —— 补「建联腿含 cloud/streamscharts 且联系方式为空」的行。
       #   背景：云腿（*-cloud）写进去的「联系方式」几乎全空，而且**没有任何腿管它们**
