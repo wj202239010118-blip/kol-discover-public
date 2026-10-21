@@ -26,8 +26,7 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install --quiet gspread google-auth curl_cffi
-      # 2026-10-20: --deep 的 YouTube 路需要 yt-dlp（抓视频描述里的商务邮箱）
-      - run: pip install --quiet yt-dlp
+      # 2026-10-21: yt-dlp 只给深度抓取用，已随 fill-contacts.yml 拆走 → 主链不再装。
 
       - name: 写入服务账号凭据（来自 Secrets，不进仓库）
         env:
@@ -111,6 +110,13 @@ jobs:
           DISCOVER_SHEET_ID: ${{ secrets.DISCOVER_SHEET_ID }}
           COOP_SNAPSHOT_JSON: ${{ secrets.COOP_SNAPSHOT_JSON }}
         run: |
+          # 2026-10-21: 每轮都算太浪费（要读 4 张表 10 万行，只产出 job summary，没人每 30 分钟看）。
+          #   改成每 6 小时一次；其余轮次秒退。
+          H=$(date -u +%H)
+          if [ $((10#$H % 6)) -ne 0 ]; then
+            echo "⏭ 优先级判定本轮跳过（UTC ${H} 点，每 6 小时一次）"
+            exit 0
+          fi
           python3 automation/discover_priority_cloud.py --dry-run --top 15 \
             --json priority_cloud.json 2>&1 | tee /tmp/prio.txt
           {
