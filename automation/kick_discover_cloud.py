@@ -132,11 +132,34 @@ _TOKEN = {"v": "", "exp": 0.0}
 _TH_LOCK = threading.Lock()
 _TH_NEXT = [0.0]
 _KICK_RPS = float(os.environ.get("KICK_RPS", "3"))
+# 2026-10-21(自适应): 固定降速会拖慢正常时段；改成按反馈控制 ——
+#   连续 N 次 429 → 全局暂停（15s 起，指数翻倍，封顶 120s）；成功一次立即清零。
+#   这样"被限时自动等、没被限时全速"，比把 RPS 拍死更治本。
+_BACKOFF_UNTIL = [0.0]
+_429_STREAK = [0]
+
+
+def note_403_429():
+    with _TH_LOCK:
+        _429_STREAK[0] += 1
+        wait = min(120.0, 15.0 * (2 ** min(4, _429_STREAK[0] - 1)))
+        _BACKOFF_UNTIL[0] = max(_BACKOFF_UNTIL[0], time.time() + wait)
+        print("     [backoff] 429 连续 %d 次 → 全局暂停 %.0fs" % (_429_STREAK[0], wait),
+              file=sys.stderr)
+
+
+def note_ok():
+    if _429_STREAK[0]:
+        with _TH_LOCK:
+            _429_STREAK[0] = 0
 
 
 def _throttle():
     with _TH_LOCK:
         now = time.time()
+        if _BACKOFF_UNTIL[0] > now:
+            time.sleep(min(30.0, _BACKOFF_UNTIL[0] - now))
+            now = time.time()
         if _TH_NEXT[0] > now:
             time.sleep(_TH_NEXT[0] - now)
             now = time.time()
@@ -165,6 +188,10 @@ def _req(url, headers=None, timeout=20, data=None, cffi=True):
         try:
             from curl_cffi import requests as _c
             r = _c.get(url, headers=h, impersonate="chrome124", timeout=timeout)
+            if r.status_code in (429, 403):
+                note_403_429()
+            elif r.status_code == 200:
+                note_ok()
             return r.status_code, r.text
         except Exception:
             pass
