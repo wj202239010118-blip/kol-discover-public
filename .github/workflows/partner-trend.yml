@@ -58,11 +58,5 @@ jobs:
           TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
         run: python3 automation/partner_trend_cloud.py --apply
 
-      - name: 上传原始明细（artifact）
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: partner-trend-raw-${{ github.run_id }}
-          path: automation/partner_trend_raw.jsonl
-          if-no-files-found: ignore
-          retention-days: 90
+      # 2026-10-21(安全): 删除 artifact 上传 —— public 仓库的 artifact 任何人可下载，
+      #   而 partner_trend_raw.jsonl 是合作主播明细。明细继续写本机/表，不再落 GitHub。
