@@ -512,6 +512,7 @@ def metas(slug, disp, bio, d, cat_name, viewers, chat=True):
         "分类": cat_name or "", "语种": lang, "观众数": str(viewers or ""),
         "粉丝数": str(followers or ""), "主页链接": "https://kick.com/%s" % slug,
         "Kick主页": "https://kick.com/%s" % slug, "Twitch主页": "",
+        "简介": bio,                      # 2026-10-21: 表里有「简介」列，之前 Kick 腿没填
         "国家": country, "状态": "待确认",
         "联系方式": _contact,
         "其他社交账号": " / ".join(others), "国家判断理由": why,
