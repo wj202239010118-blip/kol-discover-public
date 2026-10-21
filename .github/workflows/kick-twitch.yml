@@ -1,32 +1,32 @@
-# Kick + Twitch 合并腿 · GitHub Actions 定时（2026-10-08）
-# 为什么合并：GitHub 私有仓库免费额度 2000 分钟/月，**每个 job 至少按 1 分钟计费** →
-#   kick(2 分) + twitch(1 分) 分开跑每小时 = 3 分/小时 = 2160 分/月（超额度）；
-#   合并成一次 runner 启动（1.3+0.5≈2 分）→ 1440 分/月，省掉重复的 setup/checkout 开销。
-# 口径不变：Kick → casinoKOL/钓KOC，Twitch → 非casinoKOL/非casinoKOC（各自脚本自带分流/去重）。
-# 定时：由 Cloudflare Worker gh-discover-cron 每小时调 workflow_dispatch（2026-10-09 起）。
+# Kick + Twitch 发现腿 · GitHub Actions 定时（2026-10-21 拆 job 并行）
+#
+# 2026-08~10-20 的历史：私有仓库 Actions 只有 2000 分钟/月，为省额度把 Kick/Twitch 合并成一个 job。
+# 2026-10-21：仓库已迁到 **public**（Actions 免费），"省分钟"的约束消失 →
+#   拆成两个并行 job：两者打的是不同平台 API、没有任何数据依赖，串行跑纯浪费
+#   （实测 Kick 2m43s + Twitch 36s 串行，拆开后墙钟 ≈ 取较长者）。
+#   · 两个 job 各自 restore/save 自己的重试状态（cache key 分开，互不覆盖）
+#   · 优先级判定依赖两边都写完 → 单独一个 job，needs: [kick, twitch]，且每 6 小时才真跑
+# 口径不变：Kick → casino 两表，Twitch → 非 casino 两表（各自脚本自带分流/去重）。
 name: kick-twitch-discover
 
 on:
-  # 2026-10-09: 定时改由 Cloudflare Worker `gh-discover-cron` 调 workflow_dispatch
-  #   （GitHub schedule 是 best-effort —— 实测名义每小时、实际 5~7h 才一次 → 弃用）。
-  #   见本机 ~/scripts/cf-discover-cron/。保留手动触发。
-  workflow_dispatch:            # 手动触发（控制台「云端跑一轮」/ CLI）
+  # 定时由 Cloudflare Worker `gh-discover-cron` 调 workflow_dispatch（GitHub schedule 是 best-effort）。
+  workflow_dispatch:
 
 concurrency:
   group: kick-twitch-discover
-  cancel-in-progress: false     # 不并发（表写入别打架）
+  cancel-in-progress: false     # 整个 workflow 串行（两个 job 在内部并行，表写入不打架）
 
 jobs:
-  discover:
+  kick:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.11'
       - run: pip install --quiet gspread google-auth curl_cffi
-      # 2026-10-21: yt-dlp 只给深度抓取用，已随 fill-contacts.yml 拆走 → 主链不再装。
 
       - name: 写入服务账号凭据（来自 Secrets，不进仓库）
         env:
@@ -35,83 +35,123 @@ jobs:
           mkdir -p .secrets
           printf '%s' "$SA" > .secrets/sa.json
 
-      # 2026-10-21(消化效率): 失败重试状态跨轮持久化 —— 详情抓取失败的主播下一轮**优先重试**，
-      #   不再直接丢弃（上一轮实测一次丢 187 个）。cache 只存这一个 JSON，单写者（concurrency 已串行）。
       - name: 恢复失败重试状态
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: state
-          key: discover-state-${{ github.run_id }}
-          restore-keys: discover-state-
+          key: discover-state-kick-${{ github.run_id }}
+          restore-keys: discover-state-kick-
 
       - name: 准备 state 目录
         run: mkdir -p state
 
       - name: Kick 一轮（casino 两表）
-        if: always()            # 上一步失败也要跑（两条腿互不拖累）
         env:
           GSPREAD_SA: .secrets/sa.json
           DISCOVER_SHEET_ID: ${{ secrets.DISCOVER_SHEET_ID }}
           KICK_CLIENT_ID: ${{ secrets.KICK_CLIENT_ID }}
           KICK_CLIENT_SECRET: ${{ secrets.KICK_CLIENT_SECRET }}
-          KICK_MAX_NEW: '200'      # 2026-10-21: 每轮最多写 200 个新主播（全站扫完 ≈12,135 个候选）
-          KICK_MAX_PAGES: '14'      # 2026-10-21: 全站在播 12,135 个 = 13 页（1000/页），14 页留余量 → **每轮全站读完**
+          KICK_MAX_NEW: '200'
+          KICK_MAX_PAGES: '14'      # 全站在播 ~12,135 = 13 页（1000/页），14 页留余量
           KICK_RETRY_STATE: state/kick_retry.json
-          KICK_KOL_QUOTA: '140'     # KOL 先消化
-          KICK_KOC_QUOTA: '60'      # KOC 保底；KOL 没用完的额度会动态让给 KOC
-          KICK_RPS: '3'             # 全局请求速率（429 治理，实测无节流时 29% 失败）
+          KICK_KOL_QUOTA: '140'
+          KICK_KOC_QUOTA: '60'      # KOC 保底；KOL 没用完的额度动态让给 KOC
+          KICK_RPS: '3'             # 全局请求速率上限（429 治理）
           GPT_THINK_KEY: ${{ secrets.GPT_THINK_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
-          # 2026-10-21(提速): 每轮只跑 casino 类目（几十个候选，秒级）；非 casino 每 2 小时一次。
+          # casino 类目每轮跑（几十个候选，秒级）；非 casino 每 2 小时一次（几百个候选）。
           H=$(date -u +%H)
           if [ $((10#$H % 2)) -eq 0 ]; then export KICK_SCOPE=all; else export KICK_SCOPE=casino; fi
           echo "KICK_SCOPE=$KICK_SCOPE（UTC ${H} 点）"
           python3 automation/kick_discover_cloud.py --apply
 
-      - name: Twitch 一轮（非casino 两表）
+      - name: 保存失败重试状态
         if: always()
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: state
+          key: discover-state-kick-${{ github.run_id }}
+
+  twitch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+      - run: pip install --quiet gspread google-auth curl_cffi
+
+      - name: 写入服务账号凭据（来自 Secrets，不进仓库）
+        env:
+          SA: ${{ secrets.GSPREAD_SA_JSON }}
+        run: |
+          mkdir -p .secrets
+          printf '%s' "$SA" > .secrets/sa.json
+
+      - name: 恢复失败重试状态
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: state
+          key: discover-state-twitch-${{ github.run_id }}
+          restore-keys: discover-state-twitch-
+
+      - name: 准备 state 目录
+        run: mkdir -p state
+
+      - name: Twitch 一轮（非 casino 两表）
         env:
           GSPREAD_SA: .secrets/sa.json
           DISCOVER_SHEET_ID: ${{ secrets.DISCOVER_SHEET_ID }}
           TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
           TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
-          TWITCH_MAX_NEW: '200'     # 2026-10-21: 全类目扫完（5,385 在播），每轮最多写 200
-          TWITCH_MAX_PAGES: '40'   # 2026-10-21: Just Chatting 3,851 个在播 = 39 页（100/页）→ 40 页 = 每个类目都读到底
+          TWITCH_MAX_NEW: '200'
+          TWITCH_MAX_PAGES: '40'    # Just Chatting 3,851 在播 = 39 页（100/页）→ 每个类目读到底
           TWITCH_RETRY_STATE: state/twitch_retry.json
           TWITCH_KOL_QUOTA: '140'
-          TWITCH_KOC_QUOTA: '100'   # 2026-10-21: 实测每轮有 96 个待处理、只写 60 → 提到 100
+          TWITCH_KOC_QUOTA: '100'
         run: |
           H=$(date -u +%H)
           if [ $((10#$H % 2)) -eq 0 ]; then export TWITCH_SCOPE=all; else export TWITCH_SCOPE=casino; fi
           echo "TWITCH_SCOPE=$TWITCH_SCOPE（UTC ${H} 点）"
           python3 automation/twitch_discover_cloud.py --apply
 
-      # 2026-10-12: 联系方式补全一轮 —— 补「建联腿含 cloud/streamscharts 且联系方式为空」的行。
-      #   背景：云腿（*-cloud）写进去的「联系方式」几乎全空，而且**没有任何腿管它们**
-      #     （discover-sc-backfill.py 写死只认 streamscharts-free）。
-      #   做法：Twitch → /helix/users 的 description（批量 100/次，纯 API，不抓页面）。
-      #   为什么并进本 job 而不单开定时 workflow：私有仓库免费 2000 分钟/月，本 job 每小时
-      #     已吃 ~2 分钟（≈1440/月）；再开一个定时 workflow 必然超额度。
-      #   --days 1：云端无本地 tried 状态，只能靠时间窗口收口。取 1 天而非 3 天，
-      #     是为了让「查过、确实提不到」的老行**尽快过期**，免得长期占着候选池每轮白扫。
-      #     代价：Actions 若连续停摆 >1 天会漏 —— 由本机 fill-contacts.py（有 tried 记账、
-      #     不限天数）兜底。
-      # 2026-10-21: 补联系方式已拆到独立 workflow `fill-contacts.yml`（Claude/DeepSeek 一致建议）——
-      #   深度抓取 20 行 × 25s 不再拖住发现循环。这里只留发现 + 打分。
+      - name: 保存失败重试状态
+        if: always()
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: state
+          key: discover-state-twitch-${{ github.run_id }}
+
+  priority:
+    # 依赖两条腿都写完；失败也照跑（报告用旧数据也比没有好）。
+    needs: [kick, twitch]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+      - run: pip install --quiet gspread google-auth
+
+      - name: 写入服务账号凭据（来自 Secrets，不进仓库）
+        env:
+          SA: ${{ secrets.GSPREAD_SA_JSON }}
+        run: |
+          mkdir -p .secrets
+          printf '%s' "$SA" > .secrets/sa.json
+
       - name: 候选优先级判定（Kick + Twitch）
-        # 2026-10-20: 用户要求「电脑关了也要能操作」——把本机版 discover_priority 搬到云上。
-        # 数据源改成直接读 4 张发现表（15MB 候选池进不了 Secret）。
-        # 默认 --dry-run：只出报告写进 job summary，**不覆盖发现表「状态」列**
-        # （那列还有「在库/已合作」等语义，等确认后再开 --apply）。
+        # 读 4 张表 10 万行，只产出 job summary → 每 6 小时一次足够，其余轮次秒退。
         continue-on-error: true
         env:
           GSPREAD_SA: .secrets/sa.json
           DISCOVER_SHEET_ID: ${{ secrets.DISCOVER_SHEET_ID }}
           COOP_SNAPSHOT_JSON: ${{ secrets.COOP_SNAPSHOT_JSON }}
         run: |
-          # 2026-10-21: 每轮都算太浪费（要读 4 张表 10 万行，只产出 job summary，没人每 30 分钟看）。
-          #   改成每 6 小时一次；其余轮次秒退。
           H=$(date -u +%H)
           if [ $((10#$H % 6)) -ne 0 ]; then
             echo "⏭ 优先级判定本轮跳过（UTC ${H} 点，每 6 小时一次）"
@@ -125,10 +165,3 @@ jobs:
             grep -E "已合作库|优先联系 Top|共 " /tmp/prio.txt | head -30
             echo '```'
           } >> $GITHUB_STEP_SUMMARY
-
-      - name: 保存失败重试状态
-        if: always()
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: state
-          key: discover-state-${{ github.run_id }}
