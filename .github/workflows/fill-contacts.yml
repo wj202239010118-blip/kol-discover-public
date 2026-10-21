@@ -38,6 +38,8 @@ jobs:
           DISCOVER_SHEET_ID: ${{ secrets.DISCOVER_SHEET_ID }}
           TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
           TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
+          DISCOVER_API: https://kol-ext-gateway.wj202239010118.workers.dev
+          DISCOVER_TOKEN: ${{ secrets.DISCOVER_TOKEN }}
         run: python3 automation/fill_contacts_cloud.py --apply --limit 800 --days 1
 
       - name: 深度富化一轮（X / YouTube / link-in-bio）
@@ -47,4 +49,6 @@ jobs:
           DISCOVER_SHEET_ID: ${{ secrets.DISCOVER_SHEET_ID }}
           TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
           TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
+          DISCOVER_API: https://kol-ext-gateway.wj202239010118.workers.dev
+          DISCOVER_TOKEN: ${{ secrets.DISCOVER_TOKEN }}
         run: python3 automation/fill_contacts_cloud.py --apply --limit 800 --days 1 --deep --deep-limit 20

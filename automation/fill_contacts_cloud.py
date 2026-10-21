@@ -163,6 +163,24 @@ def _ts_epoch(ts):
         return None
 
 
+# ── 2026-10-21: D1 状态（只记"已补到联系方式"，供下游建联队列直接查）──
+D1_API = (os.environ.get("DISCOVER_API") or "").rstrip("/")
+D1_TOK = os.environ.get("DISCOVER_TOKEN") or ""
+
+
+def _d1_contact(items):
+    if not D1_API or not D1_TOK or not items:
+        return
+    try:
+        req = urllib.request.Request(D1_API + "/discover/contact_done",
+            data=json.dumps({"items": items}).encode(),
+            headers={"Authorization": "Bearer " + D1_TOK,
+                     "Content-Type": "application/json", "User-Agent": "fill-contacts/1.0"})
+        urllib.request.urlopen(req, timeout=30).read()
+    except Exception as e:
+        print("  [warn] D1 contact_done 失败: %s" % str(e)[:70], file=sys.stderr)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true", help="真写表（默认干跑）")
@@ -245,7 +263,9 @@ def main():
             if ts is None or (time.time() - ts) >= a.days * 86400:
                 skipped_old += 1
                 continue
-            todo.append((ts, nm, i + 1, slug))
+            _plat = g("平台", i).strip() if "平台" in cols else ""
+            _uid = g("平台UID", i).strip() if "平台UID" in cols else ""
+            todo.append((ts, nm, i + 1, slug, _plat, _uid))
         print("[%s] Twitch %d 行 / 空联系方式 %d 行" % (nm, n_tw, n_empty), file=sys.stderr)
 
     # 2026-10-21: 先 KOL 两表、再 KOC（用户：KOC 慢慢来）；同组内按入库时间【新→旧】，
@@ -265,10 +285,10 @@ def main():
     print("▶ /helix/users 命中简介 %d/%d" % (hit, len(logins)), file=sys.stderr)
 
     results = []
-    for ts, nm, rn, slug in todo:
+    for ts, nm, rn, slug, _plat, _uid in todo:
         c = extract_contact(descs.get(str(slug).lower(), ""))
         if c:
-            results.append((nm, rn, slug, c))
+            results.append((nm, rn, slug, c, _plat, _uid))
     # ── 二/三路：对第一路没提到的行再试（--deep 才开）────────────────────
     if a.deep and len(results) < len(todo):
         mods = _try_imports()
@@ -282,14 +302,14 @@ def main():
                 continue
             c = deep_enrich(sl, bio, mods)
             if c:
-                results.append((nm, rn, sl, c))
+                results.append((nm, rn, sl, c, it.get("_plat", ""), it.get("_uid", "")))
                 deep_hits += 1
                 print("   ✔ %-20s %s" % (sl, c[:60]), file=sys.stderr)
         print("▶ 深度抓取额外命中 %d/%d" % (deep_hits, min(len(miss), a.deep_limit)), file=sys.stderr)
 
     rate = 100.0 * len(results) / max(1, len(todo))
     print("▶ 提到联系方式 %d/%d（%.0f%%）" % (len(results), len(todo), rate), file=sys.stderr)
-    for nm, rn, slug, c in results[:5]:
+    for nm, rn, slug, c, _pl, _ud in results[:5]:
         print("   %-14s %-22s → %s" % (nm, slug, c[:64]), file=sys.stderr)
     if not a.apply:
         print("（干跑；加 --apply 才写表）", file=sys.stderr)
@@ -298,7 +318,7 @@ def main():
     # ── 写回（按扫描时记下的行号，不做 slug 反查 → 天然免疫同名跨平台撞行） ──
     import gspread.utils
     by_tab = {}
-    for nm, rn, slug, c in results:
+    for nm, rn, slug, c, _pl, _ud in results:
         by_tab.setdefault(nm, []).append((rn, c))
     written, failed = 0, 0
     for nm, pairs in by_tab.items():
@@ -314,6 +334,11 @@ def main():
             except Exception as e:
                 failed += len(batch)
                 print("  ⚠️ [%s] 写表失败（保留待下轮）: %s" % (nm, str(e)[:80]), file=sys.stderr)
+    # 2026-10-21: 补到联系方式的，记到 D1（下游建联队列可直接查 contact_status='has_contact'）
+    _ci = [{"platform": ("kick" if "kick" in str(_pl).lower() else "twitch"),
+            "uid": str(_ud), "contact_status": "has_contact"}
+           for (_nm, _rn, _sl, _c, _pl, _ud) in results if _ud]
+    _d1_contact(_ci)
     print("▶ 已写 %d 处 / 失败 %d 处" % (written, failed), file=sys.stderr)
     return 0
 
