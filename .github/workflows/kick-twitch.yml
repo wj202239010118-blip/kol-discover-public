@@ -56,7 +56,7 @@ jobs:
           TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
           TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
           TWITCH_MAX_NEW: '60'
-          TWITCH_MAX_PAGES: '6'   # 2026-10-21: 3→6（待处理只剩 3 个 = 当前 3 页已挖尽，扩大扫描面）
+          TWITCH_MAX_PAGES: '12'   # 2026-10-21: 3→6→12（6 页仍有 18 个新人，继续扩）
         run: python3 automation/twitch_discover_cloud.py --apply
 
       # 2026-10-12: 联系方式补全一轮 —— 补「建联腿含 cloud/streamscharts 且联系方式为空」的行。
@@ -83,13 +83,10 @@ jobs:
           #   ② 深度抓取（X / YouTube / link-in-bio，25s/行）仍**每 3 小时**一次，避免反爬与拉长每轮耗时。
           #   排序已在脚本内改成「KOL 两表优先，KOC 后置」。
           python3 automation/fill_contacts_cloud.py --apply --limit 800 --days 1
-          H=$(date -u +%H)
-          if [ $((10#$H % 3)) -eq 0 ]; then
-            python3 automation/fill_contacts_cloud.py --apply --limit 800 --days 1 \
-              --deep --deep-limit 20
-          else
-            echo "⏭ 深度抓取本轮跳过（UTC ${H} 点，每 3 小时跑一次）"
-          fi
+          # 2026-10-21(用户: 提速): 深度抓取改**每轮**跑，一次 40 行（40×25s≈17min，30 分钟一轮放得下）。
+          #   原来每 3 小时 20 行 → 800 行积压要 10 小时，现在 ~2.5 小时清完。
+          python3 automation/fill_contacts_cloud.py --apply --limit 800 --days 1 \
+            --deep --deep-limit 40
 
       - name: 候选优先级判定（Kick + Twitch）
         # 2026-10-20: 用户要求「电脑关了也要能操作」——把本机版 discover_priority 搬到云上。
