@@ -326,6 +326,40 @@ def load_seen(sh):
     return seen, slugs
 
 
+# ── 2026-10-21: D1 状态层（去重 / 状态机 / 指标）。未配置时全部静默回落旧路径。──
+D1_API = (os.environ.get("DISCOVER_API") or "").rstrip("/")
+D1_TOK = os.environ.get("DISCOVER_TOKEN") or ""
+
+
+def _d1(path, payload=None, method="POST"):
+    if not D1_API or not D1_TOK:
+        return None
+    try:
+        data = json.dumps(payload).encode() if payload is not None else None
+        req = urllib.request.Request(D1_API + path, data=data, method=method,
+            headers={"Authorization": "Bearer " + D1_TOK,
+                     "Content-Type": "application/json", "User-Agent": "twitch-discover/1.0"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode())
+    except Exception as e:
+        print("  [warn] D1 %s 失败: %s" % (path, str(e)[:70]), file=sys.stderr)
+        return None
+
+
+def d1_known(uids):
+    """批量查 D1 已知 uid。D1 不可用 → None（调用方回落读表）。"""
+    if not D1_API or not D1_TOK:
+        return None
+    out = set()
+    for i in range(0, len(uids), 90):
+        r = _d1("/discover/check", {"platform": "twitch", "uids": uids[i:i + 90]})
+        if r is None:
+            return None
+        for it in (r.get("known") or []):
+            out.add(str(it.get("uid")))
+    return out
+
+
 def main():
     if not SHEET_ID:
         print("缺 DISCOVER_SHEET_ID", file=sys.stderr)
@@ -362,7 +396,17 @@ def main():
     else:
         p = os.environ.get("GSPREAD_SA") or ""
     sh = gspread.service_account(filename=p).open_by_key(SHEET_ID)
-    seen, slugs_seen = load_seen(sh)
+    # 2026-10-21: 去重优先查 D1（毫秒级，不再读 4 张表 10 万行）；D1 不可用时回落读表。
+    _cand_uids = [str(u) for kind in ("casino", "noncasino") for u in buckets[kind]]
+    _t_dedup = time.time()
+    _d1k = d1_known(_cand_uids) if _cand_uids else None
+    if _d1k is not None:
+        seen = {"twitch:" + u for u in _d1k}
+        slugs_seen = set()
+        print("[去重] D1 命中 %d / 候选 %d（%.1fs，未读表）"
+              % (len(_d1k), len(_cand_uids), time.time() - _t_dedup), file=sys.stderr)
+    else:
+        seen, slugs_seen = load_seen(sh)
 
     # 目标表表头（动态：钓KOC 24 列、第3列叫「用户名」、多「来源」列）
     hdrs = {}
@@ -397,11 +441,14 @@ def main():
         return 0
     info = channels_info([m["uid"] for _, m in todo])
     print("[详情] helix/channels 命中 %d/%d" % (len(info), len(todo)), file=sys.stderr)
+    _failed = []
     for _kind, _m in todo:
         if _m["uid"] not in info and _m.get("login"):
             _r = retry.get(_m["login"]) or {}
             retry[_m["login"]] = {"fails": int(_r.get("fails", 0)) + 1,
                                   "ts": time.strftime("%Y-%m-%d %H:%M:%S")}
+            _failed.append({"platform": "twitch", "uid": _m["uid"],
+                            "status": "failed", "last_error": "detail_miss"})
     # 2026-10-12: 批量取用户简介（联系方式提取的唯一来源）—— 一次 100 个 login，纯 API。
     descs = users_desc([m.get("login") for _, m in todo])
     print("[简介] helix/users 命中 %d/%d" % (
@@ -426,7 +473,7 @@ def main():
         row = [str(mm.get(c, "")) for c in hdr]      # ← 按真实表头取列，绝不共用一套行
         out_rows.setdefault(nm, {"hdr": hdr, "rows": [], "keys": []})
         out_rows[nm]["rows"].append(row)
-        out_rows[nm]["keys"].append((m.get("login") or "", m["uid"]))
+        out_rows[nm]["keys"].append((m.get("login") or "", m["uid"], tier, kind))
 
     total = 0
     for nm, pack in out_rows.items():
@@ -451,12 +498,18 @@ def main():
                     print("     [warn] %s 配额 429，%ds 后重试(%d/9)" % (nm, _w, _try + 1), file=sys.stderr)
                     time.sleep(_w)
             if _ok:
-                for _login, _uid in pack.get("keys", []):
+                for _login, _uid, _tier, _kind in pack.get("keys", []):
                     if _login:
                         slugs_seen.add(_login)
                         retry.pop(_login, None)
                     if _uid:
                         seen.add("twitch:" + _uid)
+                # 2026-10-21: 写表成功 → D1 状态机标 exported（失败的下一轮靠 pending 重新取）
+                _items = [{"platform": "twitch", "uid": _uid, "slug": _login,
+                           "status": "exported", "grp": _tier, "vertical": _kind}
+                          for (_login, _uid, _tier, _kind) in pack.get("keys", []) if _uid]
+                if _items:
+                    _d1("/discover/done", {"items": _items})
                 print("     [写入] %s +%d" % (nm, len(rows)), file=sys.stderr)
     if _over_quota:
         print("     [配额] 超 KOL/KOC 配额未写 %d 个（下一轮继续）" % _over_quota, file=sys.stderr)
@@ -464,6 +517,17 @@ def main():
         for _k, _ in sorted(retry.items(), key=lambda x: -int((x[1] or {}).get("fails", 0)))[500:]:
             retry.pop(_k, None)
     save_retry(retry)
+    # 2026-10-21: D1 收尾 —— 失败项批量标 failed（自动退避），本轮指标落库。
+    if _failed:
+        _d1("/discover/done", {"items": _failed})
+    _d1("/discover/metrics", {"items": [
+        {"name": "twitch.candidates", "value": len(_cand_uids)},
+        {"name": "twitch.written", "value": total},
+        {"name": "twitch.detail_failed", "value": len(_failed)},
+        {"name": "twitch.dedup_ms", "value": int((time.time() - _t_dedup) * 1000)},
+        {"name": "twitch.kol", "value": n_kol},
+        {"name": "twitch.koc", "value": n_koc},
+    ]})
     print("[结果] KOL=%d KOC=%d 合计 %d 行%s" % (n_kol, n_koc, total, "" if APPLY else "（dry-run 未写）"),
           file=sys.stderr)
     return 0

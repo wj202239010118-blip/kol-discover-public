@@ -111,6 +111,8 @@ jobs:
           TWITCH_RETRY_STATE: state/twitch_retry.json
           TWITCH_KOL_QUOTA: '140'
           TWITCH_KOC_QUOTA: '100'
+          DISCOVER_API: https://kol-ext-gateway.wj202239010118.workers.dev
+          DISCOVER_TOKEN: ${{ secrets.DISCOVER_TOKEN }}
         run: |
           H=$(date -u +%H)
           if [ $((10#$H % 2)) -eq 0 ]; then export TWITCH_SCOPE=all; else export TWITCH_SCOPE=casino; fi
