@@ -370,16 +370,16 @@ def main():
     if a.deep and len(results) < len(todo):
         mods = _try_imports()
         got = {r[2] for r in results}
-        miss = [(t[0], t[1], t[2], t[3]) for t in todo if t[3] not in got]
+        miss = [t for t in todo if t[3] not in got]   # 保留 6 元组（含 _plat/_uid），下面解包要用
         print("▶ 深度抓取：%d 行待补（X bio / YouTube 描述 / link-in-bio）" % len(miss), file=sys.stderr)
         deep_hits = 0
-        for ts, nm, rn, sl in miss[:a.deep_limit]:
+        for ts, nm, rn, sl, _plat, _uid in miss[:a.deep_limit]:
             bio = descs.get(str(sl).lower(), "")
             if not bio and not sl:
                 continue
             c = deep_enrich(sl, bio, mods)
             if c:
-                results.append((nm, rn, sl, c, it.get("_plat", ""), it.get("_uid", "")))
+                results.append((nm, rn, sl, c, _plat, _uid))
                 deep_hits += 1
                 print("   ✔ %-20s %s" % (sl, c[:60]), file=sys.stderr)
         print("▶ 深度抓取额外命中 %d/%d" % (deep_hits, min(len(miss), a.deep_limit)), file=sys.stderr)
