@@ -1,0 +1,50 @@
+# 补联系方式（浅层 Twitch 简介 + 深度 X/YouTube/link-in-bio）
+# 2026-10-21(Claude/DeepSeek 二次审计一致结论): 从 kick-twitch.yml 拆出来独立跑。
+#   理由：深度抓取 20 行 × 25s ≈ 8 分钟，纯粹在等外部页面，却把「发现」这一轮锁在
+#   concurrency 队列里（实测一轮 5 分 20 秒里有 5 分 21 秒是排队）。
+#   拆开后：发现循环不再被拖，补全按自己的节奏跑，互不排队。
+name: fill-contacts
+
+on:
+  workflow_dispatch:            # 由 Cloudflare Worker gh-discover-cron 定时调
+
+concurrency:
+  group: fill-contacts
+  cancel-in-progress: false
+
+jobs:
+  fill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+      - run: pip install --quiet gspread google-auth curl_cffi
+      - run: pip install --quiet yt-dlp
+
+      - name: 写入服务账号凭据（来自 Secrets，不进仓库）
+        env:
+          SA: ${{ secrets.GSPREAD_SA_JSON }}
+        run: |
+          mkdir -p .secrets
+          printf '%s' "$SA" > .secrets/sa.json
+
+      - name: 补联系方式一轮（浅层）
+        if: always()
+        env:
+          GSPREAD_SA: .secrets/sa.json
+          DISCOVER_SHEET_ID: ${{ secrets.DISCOVER_SHEET_ID }}
+          TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
+          TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
+        run: python3 automation/fill_contacts_cloud.py --apply --limit 800 --days 1
+
+      - name: 深度富化一轮（X / YouTube / link-in-bio）
+        if: always()
+        env:
+          GSPREAD_SA: .secrets/sa.json
+          DISCOVER_SHEET_ID: ${{ secrets.DISCOVER_SHEET_ID }}
+          TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
+          TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
+        run: python3 automation/fill_contacts_cloud.py --apply --limit 800 --days 1 --deep --deep-limit 20
