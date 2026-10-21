@@ -137,6 +137,7 @@ _KICK_RPS = float(os.environ.get("KICK_RPS", "3"))
 #   这样"被限时自动等、没被限时全速"，比把 RPS 拍死更治本。
 _BACKOFF_UNTIL = [0.0]
 _429_STREAK = [0]
+_PROXY_HITS = [0]          # 本轮走代理的上游请求数（配额预算用）
 
 
 def note_403_429():
@@ -182,8 +183,11 @@ def _req(url, headers=None, timeout=20, data=None, cffi=True):
     h = dict(UA)
     if headers:
         h.update(headers)
-    if _via_proxy and D1_TOK:
-        h["Authorization"] = "Bearer " + D1_TOK
+    if _via_proxy:
+        with _TH_LOCK:
+            _PROXY_HITS[0] += 1
+        if D1_TOK:
+            h["Authorization"] = "Bearer " + D1_TOK
     if data is None and cffi:
         try:
             from curl_cffi import requests as _c
@@ -837,6 +841,7 @@ def main():
         {"name": "kick.detail_failed", "value": len(_failed)},
         {"name": "kick.dedup_ms", "value": int((time.time() - _t_dedup) * 1000)},
         {"name": "kick.passed", "value": st["pass"]},
+        {"name": "kick.proxy_requests", "value": _PROXY_HITS[0]},
     ]})
     print("[结果] 合计 %d 行%s" % (total, "" if APPLY else "（dry-run 未写）"), file=sys.stderr)
     return 0

@@ -93,6 +93,12 @@ jobs:
           if [ -z "$OLD" ]; then echo "no pending backlog"; exit 0; fi
           AGE=$(( $(date -u +%s) - $(date -d "$OLD" +%s) ))
           echo "oldest_pending=${OLD} age=${AGE}s total=${TOTAL}"
+          PROXY=$(printf '%s' "$ST" | python3 -c "import sys,json;d=json.load(sys.stdin);print(int((d.get('today') or {}).get('kick.proxy_requests') or 0))")
+          echo "today_proxy_requests=${PROXY}（免费层 100k/天）"
+          if [ "$PROXY" -gt 80000 ] && [ -n "$LARK_WEBHOOK" ]; then
+            curl -s -m 15 -X POST "$LARK_WEBHOOK" -H 'Content-Type: application/json' \
+              -d "{\"msg_type\":\"text\",\"content\":{\"text\":\"[discover] proxy quota warning: ${PROXY} requests today (limit 100000)\"}}" >/dev/null
+          fi
           if [ "$AGE" -gt 5400 ] && [ -n "$LARK_WEBHOOK" ]; then
             curl -s -m 15 -X POST "$LARK_WEBHOOK" -H 'Content-Type: application/json'               -d "{\"msg_type\":\"text\",\"content\":{\"text\":\"[discover] backlog alert: oldest pending waiting ${AGE}s, total ${TOTAL}\"}}" >/dev/null
           fi

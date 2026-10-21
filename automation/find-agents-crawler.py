@@ -584,6 +584,10 @@ def main():
         # 2026-08-24: 补充 WA shim /groups（枚举已加入群 + 成员，不依赖群消息）
         try:
             import urllib.request as _ur
+            # 2026-10-21: 云端（GitHub Actions）永远连不到本机 wa_bridge —— 直接跳过，
+            #   省掉每次 8 秒超时；并明确记为「本机专属功能缺失」，而不是静默少收。
+            if os.environ.get("GITHUB_ACTIONS"):
+                raise RuntimeError("cloud: wa_bridge 是本机服务（127.0.0.1:8770），云端不可用 → WA 社群段跳过")
             _req = _ur.Request('http://127.0.0.1:8770/groups', headers={'User-Agent': 'Mozilla/5.0'})
             with _ur.urlopen(_req, timeout=8) as _rp:
                 _gd = json.loads(_rp.read().decode())
