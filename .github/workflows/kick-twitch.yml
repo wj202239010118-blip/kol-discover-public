@@ -43,8 +43,8 @@ jobs:
           DISCOVER_SHEET_ID: ${{ secrets.DISCOVER_SHEET_ID }}
           KICK_CLIENT_ID: ${{ secrets.KICK_CLIENT_ID }}
           KICK_CLIENT_SECRET: ${{ secrets.KICK_CLIENT_SECRET }}
-          KICK_MAX_NEW: '120'      # 2026-10-21: 20→60→120（上云免费；翻页扩大后候选池足够）
-          KICK_MAX_PAGES: '12'      # 2026-10-21: 默认 6 页 → 12 页（每页 100 条在播）
+          KICK_MAX_NEW: '200'      # 2026-10-21: 每轮最多写 200 个新主播（全站扫完 ≈12,135 个候选）
+          KICK_MAX_PAGES: '14'      # 2026-10-21: 全站在播 12,135 个 = 13 页（1000/页），14 页留余量 → **每轮全站读完**
           GPT_THINK_KEY: ${{ secrets.GPT_THINK_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: python3 automation/kick_discover_cloud.py --apply
@@ -56,8 +56,8 @@ jobs:
           DISCOVER_SHEET_ID: ${{ secrets.DISCOVER_SHEET_ID }}
           TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
           TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
-          TWITCH_MAX_NEW: '120'     # 2026-10-21: 60→120（配合 12 页）
-          TWITCH_MAX_PAGES: '12'   # 2026-10-21: 3→6→12（6 页仍有 18 个新人，继续扩）
+          TWITCH_MAX_NEW: '60'      # 2026-10-21: casino 相关类目在播总共只有 ~91 个，60 上限足够
+          TWITCH_MAX_PAGES: '6'    # 2026-10-21: 实测 casino 类目在播仅 ~91 个 → 6 页已覆盖全部，再多页无新增
         run: python3 automation/twitch_discover_cloud.py --apply
 
       # 2026-10-12: 联系方式补全一轮 —— 补「建联腿含 cloud/streamscharts 且联系方式为空」的行。
@@ -87,7 +87,7 @@ jobs:
           # 2026-10-21(用户: 提速): 深度抓取改**每轮**跑，一次 40 行（40×25s≈17min，30 分钟一轮放得下）。
           #   原来每 3 小时 20 行 → 800 行积压要 10 小时，现在 ~2.5 小时清完。
           python3 automation/fill_contacts_cloud.py --apply --limit 800 --days 1 \
-            --deep --deep-limit 30
+            --deep --deep-limit 20
 
       - name: 候选优先级判定（Kick + Twitch）
         # 2026-10-20: 用户要求「电脑关了也要能操作」——把本机版 discover_priority 搬到云上。
