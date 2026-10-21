@@ -56,8 +56,8 @@ jobs:
           DISCOVER_SHEET_ID: ${{ secrets.DISCOVER_SHEET_ID }}
           TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
           TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
-          TWITCH_MAX_NEW: '60'      # 2026-10-21: casino 相关类目在播总共只有 ~91 个，60 上限足够
-          TWITCH_MAX_PAGES: '6'    # 2026-10-21: 实测 casino 类目在播仅 ~91 个 → 6 页已覆盖全部，再多页无新增
+          TWITCH_MAX_NEW: '200'     # 2026-10-21: 全类目扫完（5,385 在播），每轮最多写 200
+          TWITCH_MAX_PAGES: '40'   # 2026-10-21: Just Chatting 3,851 个在播 = 39 页（100/页）→ 40 页 = 每个类目都读到底
         run: python3 automation/twitch_discover_cloud.py --apply
 
       # 2026-10-12: 联系方式补全一轮 —— 补「建联腿含 cloud/streamscharts 且联系方式为空」的行。
