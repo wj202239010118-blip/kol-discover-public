@@ -279,7 +279,7 @@ def main():
         return 0
 
     # ── 批量取简介（100 个 login/次） ──
-    logins = [s for _, _, _, s in todo]
+    logins = [t[3] for t in todo]   # todo 现在是 6 元组（多了 platform/uid）
     descs = T.users_desc(logins)
     hit = sum(1 for l in logins if descs.get(str(l).lower()))
     print("▶ /helix/users 命中简介 %d/%d" % (hit, len(logins)), file=sys.stderr)
