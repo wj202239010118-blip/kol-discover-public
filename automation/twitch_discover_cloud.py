@@ -270,6 +270,31 @@ def is_kol(followers, country, lang_code):
     return f >= int(KOL_MIN_TWITCH * factor)
 
 
+def _active_days(uid, days=30):
+    """30 天活跃天数（有开播/有存档 VOD 的不同日期数）。
+
+    2026-10-21(用户): TwitchTracker summary 不返回活跃天数（只有 7 个字段），
+    报价页那个「活跃天数」是本机按 VOD 日期去重算的。云端没有本机记录，
+    所以直接用 **Twitch 官方 Helix** 的 archive 视频列表推：取最近 100 场，
+    日期去重。<30 天超 100 场的主播会低估，属已知上限（Helix 单页上限 100）。
+    """
+    if not uid:
+        return ""
+    try:
+        d = _json("%s/videos?user_id=%s&type=archive&first=100" % (HELIX, urllib.parse.quote(str(uid))),
+                  headers=hdr()) or {}
+        from datetime import datetime, timedelta, timezone as _tz
+        cut = (datetime.now(_tz.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        dates = set()
+        for v in (d.get("data") or []):
+            ct = str(v.get("created_at") or "")
+            if ct and ct >= cut:
+                dates.add(ct[:10])
+        return str(len(dates))
+    except Exception:
+        return ""
+
+
 def _tracker_stats(slug):
     """TwitchTracker 30 天统计（实测可用，无需登录）。
 
@@ -302,6 +327,7 @@ def metas(m, ch, desc=""):
     why = "Twitch 无国家字段；语种取自 broadcaster_language"
     _bio = str(desc or "")
     _trk = _tracker_stats(login) if login else {}
+    _ad = _active_days(uid) if uid else ""
     mails, tgs, was = RE_EMAIL.findall(_bio), RE_TG.findall(_bio), RE_WA.findall(_bio)
     # 格式与表里历史样本（discover-runner 写的 `邮箱: mailto:x@y`）保持一致 —— 同列别有两种写法。
     contact = ("邮箱: mailto:%s" % mails[0]) if mails else ""
@@ -335,7 +361,7 @@ def metas(m, ch, desc=""):
         "30天峰值观众": (str(_trk["max_viewers"]) if _trk.get("max_viewers") is not None else ""),
         "30天平均观众": (str(_trk["avg_viewers"]) if _trk.get("avg_viewers") is not None else ""),
         "30天涨粉": (str(_trk["followers"]) if _trk.get("followers") is not None else ""),
-        "活跃天数": "",           # TwitchTracker summary 不提供 → 留空（不编造）
+        "活跃天数": _ad,
         "历史峰值观众": "",       # summary 的 max_viewers 是 30 天口径 → 留空
         "简介": _bio,
         "IG": ((_links.get("instagram") or [""])[0]),
