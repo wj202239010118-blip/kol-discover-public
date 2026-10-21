@@ -287,6 +287,22 @@ def metas(m, ch, desc=""):
     # 格式与表里历史样本（discover-runner 写的 `邮箱: mailto:x@y`）保持一致 —— 同列别有两种写法。
     contact = ("邮箱: mailto:%s" % mails[0]) if mails else ""
     others = " / ".join(["TG:" + t for t in tgs[:2]] + ["WA:" + w for w in was[:2]])
+    # 2026-10-21(用户): IG / X / TikTok / YouTube / Facebook 都是联系路径 ——
+    #   Twitch 没有结构化社交字段，只能从简介里解析；没有邮箱/TG/WA 时用它兜底。
+    _links = {}
+    try:
+        import kol_identity as _ki
+        _links = _ki.parse_links(_bio) or {}
+    except Exception:
+        _links = {}
+    _social = []
+    for _k, _pref in (("twitter", "X"), ("instagram", "IG"), ("tiktok", "TikTok"),
+                      ("youtube", "YouTube"), ("facebook", "FB")):
+        _v = _links.get(_k) or []
+        if _v:
+            _social.append("%s: %s" % (_pref, str(_v[0]).lstrip("@")))
+    if not contact and not others and _social:
+        contact = " / ".join(_social[:3])
     return {
         "时间戳": _local_ts(), "平台": "Twitch", "主播名": m.get("name") or login,
         "用户名/Slug": login, "用户名": login, "平台UID": uid,
@@ -295,7 +311,11 @@ def metas(m, ch, desc=""):
         "主页链接": "https://twitch.tv/%s" % login,
         "国家": country, "状态": "待确认",
         "联系方式": contact, "其他社交账号": others, "国家判断理由": why,
-        "IG": "", "X": "", "TikTok": "", "YouTube": "", "Facebook": "", "Discord": "",
+        "IG": ((_links.get("instagram") or [""])[0]),
+        "X": ((_links.get("twitter") or [""])[0]),
+        "TikTok": ((_links.get("tiktok") or [""])[0]),
+        "YouTube": ((_links.get("youtube") or [""])[0]),
+        "Facebook": ((_links.get("facebook") or [""])[0]), "Discord": "",
         "william备注": "", "建联腿": "twitch-cloud", "来源": "twitch-cloud",
         "_followers": int(followers or 0), "_lang_code": lang_code,
     }

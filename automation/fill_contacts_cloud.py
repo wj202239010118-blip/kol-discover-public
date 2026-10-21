@@ -87,6 +87,60 @@ def _try_imports():
     return mods
 
 
+def _social_contact(bio):
+    """2026-10-21(用户): 提不到邮箱/TG/WA 时，把 bio 里的社交主页当成「联系路径」写进联系方式。
+    IG / X / TikTok / YouTube / Facebook 都是能找到人的入口 —— 运营点进去就能私信。"""
+    try:
+        import kol_identity as _ki
+        links = _ki.parse_links(bio or "")
+    except Exception:
+        return ""
+    out = []
+    for k, pref in (("twitter", "X"), ("instagram", "IG"), ("tiktok", "TikTok"),
+                    ("youtube", "YouTube"), ("facebook", "FB")):
+        v = links.get(k) or []
+        if v:
+            out.append("%s: %s" % (pref, str(v[0]).lstrip("@")))
+    return " / ".join(out[:3])
+
+
+def _social_bio(kind, handle):
+    """抓 IG / TikTok 的主页 bio（未登录可见的部分）。
+
+    2026-10-21(用户): "IG / X / TikTok / YouTube / Facebook 都是能找到人的路径" ——
+    原来只做了 X 和 YouTube，这里补 IG / TikTok（Facebook 有登录墙，跳过）。
+    只用公开页面的 og:description / meta description，不登录、不绕墙。
+    返回 (bio 文本, 是否确认是同一个人)。
+    """
+    import re as _re
+    try:
+        from curl_cffi import requests as _cr
+    except Exception:
+        return "", False
+    h = str(handle or "").strip().lstrip("@")
+    if not h:
+        return "", False
+    url = ("https://www.instagram.com/%s/" % h) if kind == "ig" else \
+          ("https://www.tiktok.com/@%s" % h)
+    try:
+        r = _cr.get(url, impersonate="chrome124", timeout=12,
+                    headers={"accept-language": "en-US,en;q=0.9"})
+        if r.status_code != 200:
+            return "", False
+        html = r.text or ""
+        if h.lower() not in html.lower():
+            return "", False          # 页面里没有这个 handle → 不是同一个人
+        out = []
+        for pat in (r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']+)',
+                    r'<meta[^>]+name=["\']description["\'][^>]+content=["\']([^"\']+)'):
+            m = _re.search(pat, html, _re.I)
+            if m:
+                out.append(m.group(1))
+        return " ".join(dict.fromkeys(out))[:1200], True
+    except Exception:
+        return "", False
+
+
 def deep_enrich(slug, bio, mods, budget_s=25.0):
     """第一路（Twitch 简介）没提到时，走二/三路再试一次。
 
@@ -154,6 +208,18 @@ def deep_enrich(slug, bio, mods, budget_s=25.0):
                     texts.append(" ".join(str(x) for x in v))
         except Exception:
             pass
+
+    # ⑤ IG / TikTok（2026-10-21）：bio 里没链接时用 slug 猜 handle，抓到 og:description 再提邮箱。
+    for _kind, _known in (("ig", (links.get("instagram") or [None])[0]),
+                          ("tt", (links.get("tiktok") or [None])[0])):
+        if (_t.time() - t0) >= budget_s * 0.9:
+            break
+        _h = _known or slug
+        if not _h:
+            continue
+        _txt, _same = _social_bio(_kind, _h)
+        if _txt and _same:
+            texts.append(_txt)
 
     for t in texts:
         c = extract_contact(t)
@@ -294,7 +360,10 @@ def main():
 
     results = []
     for ts, nm, rn, slug, _plat, _uid in todo:
-        c = extract_contact(descs.get(str(slug).lower(), ""))
+        _bio = descs.get(str(slug).lower(), "")
+        c = extract_contact(_bio)
+        if not c:
+            c = _social_contact(_bio)          # 没邮箱 → 用社交主页当联系路径
         if c:
             results.append((nm, rn, slug, c, _plat, _uid))
     # ── 二/三路：对第一路没提到的行再试（--deep 才开）────────────────────

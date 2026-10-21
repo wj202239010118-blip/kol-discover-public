@@ -491,13 +491,28 @@ def metas(slug, disp, bio, d, cat_name, viewers, chat=True):
         lang = guess_lang(slug, disp, bio, chat_sample(slug, pages=1) if chat else [])
     mails, tg, wa = RE_EMAIL.findall(bio), RE_TG.findall(bio), RE_WA.findall(bio)
     others = (["TG:" + t for t in tg[:2]] + ["WA:" + w for w in wa[:2]])
+    # 2026-10-21(用户): "不要非得 X 链接 —— IG/X/TikTok/YouTube/Facebook 都是能找到人的路径"。
+    #   Kick v2 的 user{} **自带这些结构化字段**（零额外请求），所以：
+    #   邮箱/TG/WA 都没有时，直接把社交主页写进「联系方式」，运营点进去就能联系。
+    _contact = ("邮箱: %s" % mails[0]) if mails else ""
+    if not _contact and others:
+        _contact = " / ".join(others)
+    if not _contact:
+        _links = []
+        for _k, _pref in (("twitter", "X"), ("instagram", "IG"), ("tiktok", "TikTok"),
+                          ("youtube", "YouTube"), ("facebook", "FB"), ("discord", "Discord")):
+            _v = str(u.get(_k) or "").strip()
+            if _v:
+                _links.append("%s: %s" % (_pref, _v))
+        if _links:
+            _contact = " / ".join(_links[:3])
     return {
         "时间戳": _local_ts(), "平台": "Kick", "主播名": disp,
         "用户名/Slug": slug, "用户名": slug, "平台UID": uid,
         "分类": cat_name or "", "语种": lang, "观众数": str(viewers or ""),
         "粉丝数": str(followers or ""), "主页链接": "https://kick.com/%s" % slug,
         "国家": country, "状态": "待确认",
-        "联系方式": ("邮箱: %s" % mails[0]) if mails else "",
+        "联系方式": _contact,
         "其他社交账号": " / ".join(others), "国家判断理由": why,
         "IG": str(u.get("instagram") or ""), "X": str(u.get("twitter") or ""),
         "TikTok": str(u.get("tiktok") or ""), "YouTube": str(u.get("youtube") or ""),
