@@ -43,7 +43,8 @@ jobs:
           DISCOVER_SHEET_ID: ${{ secrets.DISCOVER_SHEET_ID }}
           KICK_CLIENT_ID: ${{ secrets.KICK_CLIENT_ID }}
           KICK_CLIENT_SECRET: ${{ secrets.KICK_CLIENT_SECRET }}
-          KICK_MAX_NEW: '60'   # 2026-10-21: 20→60（每轮仅 ~40s，30 分钟一轮有大量余量；去重跳过仍有 500+ 可挖）        # 保持 20 —— 实测降到 12 不省时（12 候选 79s vs 20 候选 76s）：Kick 腿耗时由 LLM 单次延迟决定（12→30s 波动），与候选数弱相关；要省配额只能降**频次**，不能降每轮量
+          KICK_MAX_NEW: '120'      # 2026-10-21: 20→60→120（上云免费；翻页扩大后候选池足够）
+          KICK_MAX_PAGES: '12'      # 2026-10-21: 默认 6 页 → 12 页（每页 100 条在播）
           GPT_THINK_KEY: ${{ secrets.GPT_THINK_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: python3 automation/kick_discover_cloud.py --apply
@@ -55,7 +56,7 @@ jobs:
           DISCOVER_SHEET_ID: ${{ secrets.DISCOVER_SHEET_ID }}
           TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
           TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
-          TWITCH_MAX_NEW: '60'
+          TWITCH_MAX_NEW: '120'     # 2026-10-21: 60→120（配合 12 页）
           TWITCH_MAX_PAGES: '12'   # 2026-10-21: 3→6→12（6 页仍有 18 个新人，继续扩）
         run: python3 automation/twitch_discover_cloud.py --apply
 
@@ -86,7 +87,7 @@ jobs:
           # 2026-10-21(用户: 提速): 深度抓取改**每轮**跑，一次 40 行（40×25s≈17min，30 分钟一轮放得下）。
           #   原来每 3 小时 20 行 → 800 行积压要 10 小时，现在 ~2.5 小时清完。
           python3 automation/fill_contacts_cloud.py --apply --limit 800 --days 1 \
-            --deep --deep-limit 40
+            --deep --deep-limit 30
 
       - name: 候选优先级判定（Kick + Twitch）
         # 2026-10-20: 用户要求「电脑关了也要能操作」——把本机版 discover_priority 搬到云上。
