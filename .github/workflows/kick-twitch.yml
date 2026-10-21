@@ -77,20 +77,19 @@ jobs:
           TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
           TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
         run: |
-          # 节流：本 job 每小时被 Cloudflare Worker 调一次，但这步只在每 3 小时
-          # （UTC 小时能被 3 整除时）真正执行。理由：Actions 按【每次 run 向上取整到分钟】
-          # 计费，本步会再花约 1 分钟 → 每小时都跑就把 1440 顶到 2160，超私有仓库免费额度 2000/月。
+          # 2026-10-21(用户: 快速消化每轮发现的网红, KOC 慢慢来):
+          #   仓库已迁 public → Actions 不再计费，去掉「每 3 小时才跑」的节流。
+          #   ① 浅层（Twitch /helix/users 批量 API，秒级）**每轮都跑** → 新发现的行 ≤30 分钟就能补上联系方式。
+          #   ② 深度抓取（X / YouTube / link-in-bio，25s/行）仍**每 3 小时**一次，避免反爬与拉长每轮耗时。
+          #   排序已在脚本内改成「KOL 两表优先，KOC 后置」。
+          python3 automation/fill_contacts_cloud.py --apply --limit 800 --days 1
           H=$(date -u +%H)
-          if [ $((10#$H % 3)) -ne 0 ]; then
-            echo "⏭ 本轮跳过（UTC ${H} 点，本步每 3 小时跑一次）"
-            exit 0
+          if [ $((10#$H % 3)) -eq 0 ]; then
+            python3 automation/fill_contacts_cloud.py --apply --limit 800 --days 1 \
+              --deep --deep-limit 20
+          else
+            echo "⏭ 深度抓取本轮跳过（UTC ${H} 点，每 3 小时跑一次）"
           fi
-          # 2026-10-20: 加 --deep —— 第一路（Twitch 简介）没提到联系方式时，
-          #   追加 X bio / YouTube 视频描述 / link-in-bio 三路。
-          #   --deep-limit 20 = 每轮最多深度抓 20 行（单行 25s 预算），
-          #   实测约 +2 分钟，仍在 45 分钟 timeout 内。
-          python3 automation/fill_contacts_cloud.py --apply --limit 800 --days 1 \
-            --deep --deep-limit 20
 
       - name: 候选优先级判定（Kick + Twitch）
         # 2026-10-20: 用户要求「电脑关了也要能操作」——把本机版 discover_priority 搬到云上。

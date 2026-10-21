@@ -49,6 +49,7 @@ if HERE not in sys.path:
 import twitch_discover_cloud as T          # 复用 token()/hdr()/_json()/users_desc()/RE_*
 
 TABLES = ["casinoKOL", "钓KOC", "非casinoKOL", "非casinoKOC"]
+KOC_TABS = {"钓KOC", "非casinoKOC"}   # 2026-10-21(用户: KOC 慢慢来): 排序时 KOC 表后置，KOL 先消化
 COL = "联系方式"
 LEG_COL = "建联时间"      # 2026-10-20 改造：原「建联腿」→「建联时间」（记发邮件建联的日期）
 TS_COL = "时间戳"
@@ -247,8 +248,9 @@ def main():
             todo.append((ts, nm, i + 1, slug))
         print("[%s] Twitch %d 行 / 空联系方式 %d 行" % (nm, n_tw, n_empty), file=sys.stderr)
 
-    # 按入库时间【新→旧】：limit 截断时优先保住最新的行（老行由本机 fill-contacts 兜底）
-    todo.sort(key=lambda x: -x[0])
+    # 2026-10-21: 先 KOL 两表、再 KOC（用户：KOC 慢慢来）；同组内按入库时间【新→旧】，
+    #   limit 截断时优先保住最新的行（老行由本机 fill-contacts 兜底）。
+    todo.sort(key=lambda x: (1 if x[1] in KOC_TABS else 0, -x[0]))
     print("▶ 待补 %d 行（跳过：来源腿不匹配 %d / 超 %d 天或时间戳不可解析 %d）"
           % (len(todo), skipped_leg, a.days, skipped_old), file=sys.stderr)
     todo = todo[:a.limit]
