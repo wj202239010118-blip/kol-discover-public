@@ -504,8 +504,17 @@ def main():
         if _recon:
             print("[去重] 本地兜底 %d 条（D1 写失败遗留）" % len(_recon), file=sys.stderr)
         slugs_seen = set()
-        print("[去重] D1 命中 %d / 候选 %d（%.1fs，未读表）"
-              % (len(_d1k), len(_cand_uids), time.time() - _t_dedup), file=sys.stderr)
+        # 2026-10-22(事故复盘): D1 只是加速缓存，**表才是真相**。D1 日额度用尽那几天，
+        #   落表的行没进 D1 → 下一轮被当新人重复写。现在永远并上表内已有记录。
+        try:
+            _tbl_seen, _tbl_slugs = load_seen(sh)
+            seen |= _tbl_seen
+            slugs_seen = _tbl_slugs
+        except Exception as _e:
+            print("  [warn] 表内兜底失败: %s" % str(_e)[:60], file=sys.stderr)
+        print("[去重] D1 %d + 表内 %d（合并 %d）/ 候选 %d（%.1fs）"
+              % (len(_d1k), len(_tbl_seen) if '_tbl_seen' in dir() else 0,
+                 len(seen), len(_cand_uids), time.time() - _t_dedup), file=sys.stderr)
     else:
         seen, slugs_seen = load_seen(sh)
 
@@ -580,6 +589,12 @@ def main():
     total = 0
     for nm, pack in out_rows.items():
         rows = pack["rows"]
+        # 2026-10-22: uid 为空的行走不了 (platform,uid) 去重 → 每轮重复写。平台UID 是第 5 列。
+        _before = len(rows)
+        rows = [r for r in rows if len(r) > 4 and str(r[4]).strip()]
+        if len(rows) != _before:
+            print("[%s] 丢弃 uid 为空 %d 行" % (nm, _before - len(rows)), file=sys.stderr)
+            pack["rows"] = rows
         total += len(rows)
         print("[%s] 待写 %d 行（表头 %d 列）" % (nm, len(rows), len(pack["hdr"])), file=sys.stderr)
         for r in rows[:3]:

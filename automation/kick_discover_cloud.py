@@ -719,8 +719,17 @@ def main():
         if _recon:
             print("[去重] 本地兜底 %d 条（D1 写失败遗留）" % len(_recon), file=sys.stderr)
         seen = set()
-        print("[去重] D1 slug 命中 %d / 候选 %d（%.1fs，未读表）"
-              % (len(slugs_seen), len(_all_slugs), time.time() - _t_dedup), file=sys.stderr)
+        # 2026-10-22(事故复盘): D1 只是**加速缓存**，表才是真相。之前这里写「未读表」，
+        #   D1 日额度用尽那几天落表的行没进 D1 → 下一轮被当新人，同一主播每 30 分钟写一行
+        #   （实测 ragnarookfps ×13、running_beauty ×25）。现在永远并上表内已有 slug。
+        try:
+            _, _tbl_slugs, _ = load_seen(sh)
+            slugs_seen |= _tbl_slugs
+        except Exception as _e:
+            print("  [warn] 表内 slug 兜底失败: %s" % str(_e)[:60], file=sys.stderr)
+        print("[去重] D1 slug %d + 表内 slug %d（合并后 %d）/ 候选 %d（%.1fs）"
+              % (len(_d1sl or []), len(_tbl_slugs) if '_tbl_slugs' in dir() else 0,
+                 len(slugs_seen), len(_all_slugs), time.time() - _t_dedup), file=sys.stderr)
     else:
         seen, slugs_seen, _ = load_seen(sh)
 
@@ -844,6 +853,13 @@ def main():
     total = 0
     for nm, pack in out_rows.items():
         rows = pack["rows"]
+        # 2026-10-22: uid 为空的行走不了 (platform,uid) 去重 → 每轮都会重复写（实测占 17-58%）。
+        #   kick 腿的表结构里平台UID 是第 5 列（索引 4）。
+        _before = len(rows)
+        rows = [r for r in rows if len(r) > 4 and str(r[4]).strip()]
+        if len(rows) != _before:
+            print("[%s] 丢弃 uid 为空 %d 行" % (nm, _before - len(rows)), file=sys.stderr)
+            pack["rows"] = rows
         total += len(rows)
         print("[%s] 待写 %d 行（表头 %d 列）" % (nm, len(rows), len(pack["hdr"])), file=sys.stderr)
         for r in rows[:3]:
